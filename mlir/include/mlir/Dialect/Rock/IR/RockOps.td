@@ -1390,8 +1390,7 @@ def Rock_BlockwiseGemmAccelOp
       Arguments<(ins MemRefOf<LdsBufferTypes>:$matrixA,
           MemRefOf<LdsBufferTypes>:$matrixB, I32Attr:$inMPerThread,
           I32Attr:$inNPerThread, UnitAttr:$rotateMWithK, UnitAttr:$rotateNWithK,
-          UnitAttr:$directToLDS, UnitAttr:$ldsLayoutMxK, UnitAttr:$ldsLayoutNxK,
-          UnitAttr:$aAccelLayout, UnitAttr:$bAccelLayout,
+          UnitAttr:$directToLDS, Rock_GemmLDSLayoutAttr:$ldsLayoutA, Rock_GemmLDSLayoutAttr:$ldsLayoutB,
           MemRefOf<AccelArgTypes>:$bufferA, MemRefOf<AccelArgTypes>:$bufferB,
           AnyTypeOf<[MemRefOf<AccelArgTypes>,
                      MemRefOf<LdsBufferTypes>]>:$bufferAForLoad,
@@ -1558,7 +1557,7 @@ def Rock_StageOp :
   
 def Rock_AccelLayoutTransformOp :
     Rock_Op<"accel_layout_transform", [Pure, ViewLikeOpInterface]>,
-    Arguments<(ins AnyShaped:$input, UnitAttr:$isA, OptionalAttr<RockTuningParamAttrInterface>:$params)>,
+    Arguments<(ins AnyShaped:$input, UnitAttr:$isA, UnitAttr:$transposed, OptionalAttr<RockTuningParamAttrInterface>:$params)>,
     Results<(outs AnyShaped:$output)> {
   let summary = "Tensor transformation";
   let description = [{

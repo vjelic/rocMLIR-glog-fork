@@ -347,8 +347,6 @@ FailureOr<RegsAsMatrixSubTiles> mlir::rock::getPackedRegsAsTileViews(
 
   // Note: (kThreads * dThreads) = (kPerBlock * dPerBlock) / dataPerThread) =
   // blockSize
-  // int64_t kThreads = kPerBlock / kPerThread;
-  // int64_t dThreads = dPerBlock / dPerThread;
   int64_t kThreads, dThreads;
   if(accelLayout) {
     dThreads = math_util::gcd(blockSize, dPerBlock);

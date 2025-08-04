@@ -20,6 +20,7 @@
 //===-----------------------------------------------------===//
 #include "mlir/Dialect/Affine/Analysis/LoopAnalysis.h"
 #include "mlir/Dialect/Rock/IR/Rock.h"
+#include "mlir/Dialect/Rock/IR/RockTypes.h"
 #include "mlir/Dialect/Rock/IR/TransformMapBuilder.h"
 #include "mlir/Dialect/Rock/Passes.h"
 #include "mlir/Dialect/Rock/Tuning/GeneralGemmBlockStructure.h"
@@ -345,8 +346,7 @@ static LogicalResult checkLDSSize(Operation *op, int64_t aBufferBytes,
 struct LDSLayoutConfigDim {
   bool doRotateWithK;
   bool doSwapThreadIterSubDims;
-  bool ldsLayoutDxK;
-  bool accelLayout;
+  rock::GemmLDSLayout ldsLayout;
 };
 
 // This is helper struct to aggregate
@@ -457,25 +457,22 @@ static LDSLayoutConfigDim getLDSLayoutConfigDim(Type elementType, int64_t kpack,
   bool isPossibleToVectorizeD = (kpack < maxVlen && copyDPerThread > 1);
   cfg.doRotateWithK = isKContiguousDim && !isPossibleToVectorizeD;
   cfg.doSwapThreadIterSubDims = !isKContiguousDim && !isPossibleToVectorizeD;
-  cfg.ldsLayoutDxK = false;
-  // TODO(layout): refactor to choose DxK/KxD/accelLayout
-  cfg.accelLayout = accelLayout;
+  cfg.ldsLayout = GemmLDSLayout::KxDxkpack;
 
   // For direct to LDS, we can't use rotateWithK or swapThreadIterSubDims
   // because we there's no LDS write instruction.
-  // Also, we use the same memory layout as the global memory layout (KxD or
-  // DxK).
+  // Also, we use the same memory layout as the global memory layout (KxD,
+  // DxK or KxDxkpack if accelLayout).
   if (directToLDS || accelLayout) {
     cfg.doRotateWithK = false;
     cfg.doSwapThreadIterSubDims = false;
-    if(directToLDS)
-      cfg.ldsLayoutDxK = isKContiguousDim;
+    if(directToLDS && !accelLayout)
+      cfg.ldsLayout = isKContiguousDim ? GemmLDSLayout::DxK : GemmLDSLayout::KxD;
   }
   LLVM_DEBUG(llvm::dbgs() << "rotateWithK: " << cfg.doRotateWithK << "\n"
                           << "doSwapThreadIterSubDimsForM: "
                           << cfg.doSwapThreadIterSubDims << "\n"
-                          << "ldsLayoutDxK: " << cfg.ldsLayoutDxK << "\n"
-                          << "accelLayout: " << cfg.accelLayout << "\n");
+                          << "ldsLayout: " << cfg.ldsLayout << "\n");
   return cfg;
 }
 
@@ -754,7 +751,7 @@ struct GridwiseGemmRewritePattern : public OpRewritePattern<GridwiseGemmOp> {
             kPerBlock, mPerBlock, maybeVecDimInfoA->inKPerThread,
             maybeVecDimInfoA->inDPerThread, maybeVecDimInfoA->repeatKPerThread, kpack,
             maybeVecDimInfoA->vectorDim == GemmDimension::K,
-            ldsLayoutConfigA.doSwapThreadIterSubDims, ldsLayoutConfigA.accelLayout);
+            ldsLayoutConfigA.doSwapThreadIterSubDims, false);
     if (failed(maybeALdsStoreViews)) {
       return failure();
     }
@@ -773,7 +770,7 @@ struct GridwiseGemmRewritePattern : public OpRewritePattern<GridwiseGemmOp> {
             kPerBlock, nPerBlock, maybeVecDimInfoB->inKPerThread,
             maybeVecDimInfoB->inDPerThread, maybeVecDimInfoB->repeatKPerThread, kpack,
             maybeVecDimInfoB->vectorDim == GemmDimension::K,
-            ldsLayoutConfigB.doSwapThreadIterSubDims, ldsLayoutConfigB.accelLayout);
+            ldsLayoutConfigB.doSwapThreadIterSubDims, false);
     if (failed(maybeBLdsStoreViews)) {
       return failure();
     }
@@ -1087,7 +1084,7 @@ struct GridwiseAttentionAccelRewritePattern
                                    dPerBlock, maybeVectorDimInfo->inKPerThread,
                                    maybeVectorDimInfo->inDPerThread, maybeVectorDimInfo->repeatKPerThread, kpack,
                                    vectorDim == GemmDimension::K,
-                                   ldsLayoutCfg.doSwapThreadIterSubDims, ldsLayoutCfg.accelLayout);
+                                   ldsLayoutCfg.doSwapThreadIterSubDims, false);
       if (failed(maybeLdsStoreViews)) {
         return failure();
       }
@@ -1910,7 +1907,7 @@ struct GridwiseAttentionAccelRewritePattern
     rock::accel::AccelEmitterParams accelParams = accelEmitterPtr.getParams();
     Value wrappedLDSBufferForLoad = accelEmitterPtr.wrapLDSBufferForLoad(
         rewriter, loc, ldsTileBuffer, blockSize, inDPerThread, dName,
-        rotateDWithK, false, false, false);
+        rotateDWithK, false, GemmLDSLayout::KxDxkpack, false);
     int64_t repeats =
         dName == "m" ? accelParams.mRepeats : accelParams.nRepeats;
     affine::AffineForOp mRepeatsLoop =
@@ -2588,7 +2585,7 @@ struct GridwiseAttentionAccelRewritePattern
         Value wrappedLDSBufferForLoadA =
             accelEmitterPtrGemm0->wrapLDSBufferForLoad(
                 rewriter, loc, ldsTileBufferK, op.getBlockSize(),
-                gemm0InMPerThread, "m", false, false, false, false);
+                gemm0InMPerThread, "m", false, false, GemmLDSLayout::KxDxkpack, false);
         affine::AffineForOp nRepeatsLoop = rewriter.create<affine::AffineForOp>(
             loc, 0, accelParamsGemm0.nRepeats, 1);
         {
@@ -2801,7 +2798,7 @@ struct GridwiseAttentionAccelRewritePattern
                            vectorTypeOrSelf(elemTypeV, gemm1kpack));
           wrappedLDSBufferForLoadB = accelEmitterPtrGemm1->wrapLDSBufferForLoad(
               rewriter, loc, gemm1LDSBufferB, op.getBlockSize(),
-              gemm1InNPerThread, "n", false, false, false, false);
+              gemm1InNPerThread, "n", false, false, GemmLDSLayout::KxDxkpack, false);
         }
 
         affine::AffineForOp g1MLoopOp =
@@ -2856,7 +2853,7 @@ struct GridwiseAttentionAccelRewritePattern
               accelEmitterPtrGemm1->wrapLDSBufferForLoad(
                   rewriter, loc, ldsTileBufferV, op.getBlockSize(),
                   gemm1InMPerThread, "m", ldsLayoutCfgMG1.doRotateWithK, false,
-                  false, false, doBypassLDSSecondGemm);
+                  GemmLDSLayout::KxDxkpack, doBypassLDSSecondGemm);
           ArrayAttr gemm1ThreadwiseSubtileViewDxKMaps = invertTransforms(
               rewriter, loc, gemm0OutSubTileViewsTr.threadSubTile);
           Value gemm1BDxKThreadwiseView = transform(
@@ -3129,18 +3126,18 @@ struct GridwiseGemmAccelRewritePattern
       const std::unique_ptr<rock::accel::AccelEmitter> &accelEmitterPtr,
       Value tid, Value ldsAView, Value ldsBView, Value &regsA, Value &regsB,
       int64_t blockSize, int64_t inMPerThread, int64_t inNPerThread,
-      bool rotateMWithK, bool rotateNWithK, bool directToLDS, bool ldsLayoutMxK,
-      bool ldsLayoutNxK, bool accelLayoutA, bool accelLayoutB) const {
+      bool rotateMWithK, bool rotateNWithK, bool directToLDS, GemmLDSLayout ldsLayoutA,
+      GemmLDSLayout ldsLayoutB) const {
 
     // wrapLDSBufferForLoad is reading a single set of Ks into private memory
     // A/B[m/n, 0:kBasePerThread]
     Value ldsA = accelEmitterPtr->wrapLDSBufferForLoad(
         b, loc, ldsAView, blockSize, inMPerThread, "m", rotateMWithK,
-        directToLDS, ldsLayoutMxK, accelLayoutA);
+        directToLDS, ldsLayoutA);
 
     Value ldsB = accelEmitterPtr->wrapLDSBufferForLoad(
         b, loc, ldsBView, blockSize, inNPerThread, "n", rotateNWithK,
-        directToLDS, ldsLayoutNxK, accelLayoutB);
+        directToLDS, ldsLayoutB);
 
     // We enhance the transformation from wrapLDSBufferForLoad using a builder
     // that, given a single index, splits it into "m"("n") and "k" and lets
@@ -3270,6 +3267,15 @@ struct GridwiseGemmAccelRewritePattern
     if (failed(maybeVecDimInfoB)) {
       return failure();
     }
+    
+    bool isKContiguousDimA = maybeVecDimInfoA->vectorDim == GemmDimension::K;
+    bool isKContiguousDimB = maybeVecDimInfoB->vectorDim == GemmDimension::K;
+    if(!isKContiguousDimA && accelLayoutA) {
+      return failure();
+    }
+    if(!isKContiguousDimB && accelLayoutB) {
+      return failure();
+    }
     auto copyMPerThread = maybeVecDimInfoA->inDPerThread;
     auto copyNPerThread = maybeVecDimInfoB->inDPerThread;
     LLVM_DEBUG(llvm::dbgs()
@@ -3341,8 +3347,6 @@ struct GridwiseGemmAccelRewritePattern
     Value storeBufferB =
         gpuAlloc(b, loc, bCopyPerThread, elementTypeB, AddressSpace::Private);
 
-    bool isKContiguousDimA = maybeVecDimInfoA->vectorDim == GemmDimension::K;
-    bool isKContiguousDimB = maybeVecDimInfoB->vectorDim == GemmDimension::K;
     LDSLayoutConfigDim ldsLayoutConfigA = getLDSLayoutConfigDim(
         elementTypeA, kpack, maybeVecDimInfoA.value(), directToLDS, accelLayoutA);
     LDSLayoutConfigDim ldsLayoutConfigB = getLDSLayoutConfigDim(
@@ -3361,7 +3365,7 @@ struct GridwiseGemmAccelRewritePattern
             b, loc, matA, "m", bidGridOrder, bidGridLengths, blockSize,
             kPerBlock, mPerBlock, maybeVecDimInfoA->inKPerThread,
             maybeVecDimInfoA->inDPerThread, maybeVecDimInfoA->repeatKPerThread, kpack, isKContiguousDimA,
-            ldsLayoutConfigA.doSwapThreadIterSubDims, ldsLayoutConfigA.accelLayout);
+            ldsLayoutConfigA.doSwapThreadIterSubDims, accelLayoutA);
     if (failed(maybeALdsStoreViews)) {
       return failure();
     }
@@ -3379,7 +3383,7 @@ struct GridwiseGemmAccelRewritePattern
             b, loc, matB, "n", bidGridOrder, bidGridLengths, blockSize,
             kPerBlock, nPerBlock, maybeVecDimInfoB->inKPerThread,
             maybeVecDimInfoB->inDPerThread, maybeVecDimInfoB->repeatKPerThread, kpack, isKContiguousDimB,
-            ldsLayoutConfigB.doSwapThreadIterSubDims, ldsLayoutConfigB.accelLayout);
+            ldsLayoutConfigB.doSwapThreadIterSubDims, accelLayoutB);
     if (failed(maybeBLdsStoreViews)) {
       return failure();
     }
@@ -3649,10 +3653,8 @@ struct GridwiseGemmAccelRewritePattern
               (ldsLayoutConfigA.doRotateWithK ? b.getUnitAttr() : nullptr),
               (ldsLayoutConfigB.doRotateWithK ? b.getUnitAttr() : nullptr),
               (directToLDS ? b.getUnitAttr() : nullptr),
-              (ldsLayoutConfigA.ldsLayoutDxK ? b.getUnitAttr() : nullptr),
-              (ldsLayoutConfigB.ldsLayoutDxK ? b.getUnitAttr() : nullptr),
-              (ldsLayoutConfigA.accelLayout ? b.getUnitAttr() : nullptr),
-              (ldsLayoutConfigB.accelLayout ? b.getUnitAttr() : nullptr),
+              GemmLDSLayoutAttr::get(b.getContext(), ldsLayoutConfigA.ldsLayout),
+              GemmLDSLayoutAttr::get(b.getContext(), ldsLayoutConfigB.ldsLayout),
               arrayA, arrayB, arrayAForLoad, arrayBForLoad, regCAllocOp,
               op.getArchAttr(), op.getFeaturesAttr(), op.getBlockSizeAttr(),
               op.getParamsAttr());
@@ -3676,8 +3678,7 @@ struct GridwiseGemmAccelRewritePattern
               arrayAForLoad, arrayBForLoad, blockSize, copyMPerThread,
               copyNPerThread, ldsLayoutConfigA.doRotateWithK,
               ldsLayoutConfigB.doRotateWithK, directToLDS,
-              ldsLayoutConfigA.ldsLayoutDxK, ldsLayoutConfigB.ldsLayoutDxK,
-            ldsLayoutConfigA.accelLayout, ldsLayoutConfigB.accelLayout);
+              ldsLayoutConfigA.ldsLayout, ldsLayoutConfigB.ldsLayout);
           b.create<rock::YieldOp>(loc);
         }
         auto stage3 = b.create<StageOp>(loc, "MMA");

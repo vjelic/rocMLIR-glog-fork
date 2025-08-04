@@ -810,15 +810,6 @@ LogicalResult GemmOp::verify() {
              typeC = getC().getType();
   Type inElems = typeA.getElementType(), outElems = typeC.getElementType();
 
-  // accel layout
-  if(getAAccelLayout() && getATransposed())
-    return emitOpError(
-        "accel layout A must not be transposed");
-
-  if(getBAccelLayout() && !getBTransposed())
-    return emitOpError(
-        "accel layout B must be transposed");
-
   // The integer gemm will produce i32 and then truncate/extend to the requested
   // iN e.g. i8.
   if (isa<FloatType>(inElems) && !isa<FloatType>(outElems))

@@ -2271,34 +2271,22 @@ static void getGemmTypes(ArrayRef<Type> elemTypes,
            "gemmK must be divisible by kPerBlock");
   }
 
-  if(accelLayoutA) {
-    assert(!transposeA);
-    if(isCpuVerifier) {
-      assert(gemmM % mPerBlock == 0 &&
-            "gemmM must be divisible by mPerBlock");
-      int64_t mBlocks = gemmM / mPerBlock;
-      assert(!transposeA && "accel layout A must not be transposed");
+  if(accelLayoutA && isCpuVerifier) {
+    assert(gemmM % mPerBlock == 0 &&
+          "gemmM must be divisible by mPerBlock");
+    int64_t mBlocks = gemmM / mPerBlock;
 
-      aDims = {groupSize, mBlocks, kBlocks, kpackPerBlock, mPerBlock, kPack};
-    } else {
-      aDims = {groupSize*gemmK*gemmM};
-    }
+    aDims = {groupSize, transposeA ? kBlocks : mBlocks, transposeA ? mBlocks : kBlocks, kpackPerBlock, mPerBlock, kPack};
   } else {
     aDims = {groupSize, transposeA ? gemmK : gemmM,
             transposeA ? gemmM : gemmK};
   }
-  if(accelLayoutB) {
-    assert(transposeB);
-    if(isCpuVerifier) {
-      assert(gemmN % nPerBlock == 0 &&
-            "gemmN must be divisible by nPerBlock");
-      int64_t nBlocks = gemmN / nPerBlock;
-      assert(transposeB && "accel layout B must be transposed");
+  if(accelLayoutB && isCpuVerifier) {
+    assert(gemmN % nPerBlock == 0 &&
+          "gemmN must be divisible by nPerBlock");
+    int64_t nBlocks = gemmN / nPerBlock;
 
-      bDims = {groupSize, nBlocks, kBlocks, kpackPerBlock, nPerBlock, kPack};
-    } else {
-      bDims = {groupSize*gemmK*gemmN};
-    }
+    bDims = {groupSize, transposeB ? nBlocks : kBlocks, transposeB ? kBlocks : nBlocks, kpackPerBlock, nPerBlock, kPack};
   } else {
     bDims = {groupSize, transposeB ? gemmN : gemmK,
             transposeB ? gemmK : gemmN};
@@ -2360,14 +2348,12 @@ static func::FuncOp createGpuGemmKernel(ModuleOp module,
 
   Value aVal = expandedArgs[0], bVal = expandedArgs[1], cVal = expandedArgs[2];
   if(accelLayoutA) {
-    MemRefType aType = MemRefType::get({groupSize, gemmM, gemmK}, params.types[0]);
     aVal = b.create<rock::AccelLayoutTransformOp>(
-        loc, aType, func.getArgument(0), /*isA=*/b.getUnitAttr(), /*params=*/nullptr);
+        loc, argTypes[0], func.getArgument(0), /*isA=*/b.getUnitAttr(), /*transposed=*/transposeA ? b.getUnitAttr() : nullptr, /*params=*/nullptr);
   }
   if(accelLayoutB) {
-    MemRefType bType = MemRefType::get({groupSize, gemmN, gemmK}, params.types[1]);
     bVal = b.create<rock::AccelLayoutTransformOp>(
-        loc, bType, func.getArgument(1), /*isA=*/nullptr, /*params=*/nullptr);
+        loc, argTypes[1], func.getArgument(1), /*isA=*/nullptr, /*transposed=*/transposeB ? b.getUnitAttr() : nullptr, /*params=*/nullptr);
   }
 
   IntegerAttr numCUAttr =

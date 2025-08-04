@@ -48,7 +48,7 @@ struct RockExpandAccelLayoutTransformPass
 } // end anonymous namespace
 
 static Value accelLayoutToStandard(
-    OpBuilder &b, ArrayRef<int64_t> shape, ArrayRef<StringRef> nameList, StringRef dimension, Value accelLayoutTensor) {
+    OpBuilder &b, ArrayRef<int64_t> shape, ArrayRef<StringRef> nameList, StringRef dimension, bool kBlockFirst, Value accelLayoutTensor) {
   assert(dimension == "m" || dimension == "n");
   Location loc = accelLayoutTensor.getLoc();
   auto logicalShapedTy = cast<ShapedType>(accelLayoutTensor.getType());
@@ -85,18 +85,22 @@ static Value accelLayoutToStandard(
   rock::TransformMapAttr flattenerAttr = flattener.get();
 
   auto transposer = rock::BottomUpTMBuilder::above(flattener, flattenerAttr);
-  // B x d x k x kpackperblock x dperblock x kpack -> B x d x dperblock x k x kpackperblock x kpack
-  transposer.passThrough(ArrayRef<uint32_t>{0, 1, 4, 2, 3, 5}, ArrayRef<uint32_t>{0, 1, 2, 3, 4, 5});
+  if(kBlockFirst)
+    // B x d x k x kpackperblock x dperblock x kpack -> B x d x dperblock x k x kpackperblock x kpack
+    transposer.passThrough(ArrayRef<uint32_t>{0, 1, 4, 2, 3, 5}, ArrayRef<uint32_t>{0, 1, 2, 3, 4, 5});
+  else 
+    // B x k x d x kpackperblock x dperblock x kpack -> B x d x dperblock x k x kpackperblock x kpack
+    transposer.passThrough(ArrayRef<uint32_t>{0, 2, 4, 1, 3, 5}, ArrayRef<uint32_t>{0, 1, 2, 3, 4, 5});
   rock::TransformMapAttr transposerAttr = transposer.get();
 
   // B x d x dperblock x k x kpackperblock x kpack -> B x D x K (or B x K x D if transposed or B tensor)
   auto merger = rock::BottomUpTMBuilder::above(transposer, transposerAttr);
   // passThrough the batch dimension
   merger.passThrough(nameList[0]);
-  uint32_t dOutDim = 1;
-  uint32_t kOutDim = 2;
-  merger.merge(dimension, dOutDim, {nameList[1], nameList[4]});
-  merger.merge("k", kOutDim, {nameList[2], nameList[3], nameList[5]});
+  uint32_t kOutDim = kBlockFirst ? 2 : 1;
+  uint32_t dOutDim = kOutDim == 2 ? 1 : 2;
+  merger.merge(dimension, dOutDim, {nameList[kOutDim], nameList[4]});
+  merger.merge("k", kOutDim, {nameList[dOutDim], nameList[3], nameList[5]});
   rock::TransformMapAttr mergerAttr = merger.get();
 
   SmallVector<Attribute> transformAttrs{mergerAttr, transposerAttr, flattenerAttr};
@@ -109,8 +113,12 @@ struct ExpandAccelLayout : public OpRewritePattern<rock::AccelLayoutTransformOp>
   LogicalResult matchAndRewrite(rock::AccelLayoutTransformOp op,
                                 PatternRewriter &b) const override {
     StringRef dName = op.getIsA() ? "m" : "n";
+    bool transposed = op.getTransposed();
     StringRef dPerBlockName = op.getIsA() ? "mPerBlock" : "nPerBlock";
-    SmallVector<StringRef> nameList = {"g", dName, "k", "kPackPerBlock", dPerBlockName, "kPack"};
+    bool kBlockFirst = (dName == "m" && !transposed) || (dName == "n" && transposed);
+    StringRef dim1 = kBlockFirst ? dName : "k";
+    StringRef dim2 = kBlockFirst ? "k" : dName;
+    SmallVector<StringRef> nameList = {"g", dim1, dim2, "kPackPerBlock", dPerBlockName, "kPack"};
     auto maybeParams = op.getParams();
     if(!maybeParams.has_value())
       return b.notifyMatchFailure(op, "missing tuning parameters");
@@ -131,16 +139,15 @@ struct ExpandAccelLayout : public OpRewritePattern<rock::AccelLayoutTransformOp>
     int64_t d = outputType.getShape()[1];
     int64_t k = outputType.getShape()[2];
     int64_t kPerBlock = gemmParams.getKpackPerBlock() * gemmParams.getKpack();
-    // TODO: add padding support
     if(d % dPerBlock != 0 || k % kPerBlock != 0)
       return b.notifyMatchFailure(op, "output shape is not compatible with accel layout");
 
     int64_t dBlocks = d / dPerBlock;
     int64_t kBlocks = k / kPerBlock;
 
-    SmallVector<int64_t> shapeList = {g, dBlocks, kBlocks, gemmParams.getKpackPerBlock(), dPerBlock, gemmParams.getKpack()};
+    SmallVector<int64_t> shapeList = {g, kBlocks, dBlocks, gemmParams.getKpackPerBlock(), dPerBlock, gemmParams.getKpack()};
 
-    Value result = accelLayoutToStandard(b, shapeList, nameList, dName, op.getInput());
+    Value result = accelLayoutToStandard(b, shapeList, nameList, dName, kBlockFirst, op.getInput());
     b.replaceOp(op, result);
 
     return success();
