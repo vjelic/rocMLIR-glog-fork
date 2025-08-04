@@ -3283,14 +3283,6 @@ struct GridwiseGemmAccelRewritePattern
       return failure();
     }
 
-    bool isKContiguousDimA = maybeVecDimInfoA->vectorDim == GemmDimension::K;
-    bool isKContiguousDimB = maybeVecDimInfoB->vectorDim == GemmDimension::K;
-    if (!isKContiguousDimA && accelLayoutA) {
-      return failure();
-    }
-    if (!isKContiguousDimB && accelLayoutB) {
-      return failure();
-    }
     auto copyMPerThread = maybeVecDimInfoA->inDPerThread;
     auto copyNPerThread = maybeVecDimInfoB->inDPerThread;
     LLVM_DEBUG(llvm::dbgs()
@@ -3365,7 +3357,9 @@ struct GridwiseGemmAccelRewritePattern
         gpuAlloc(b, loc, aCopyPerThread, elementTypeA, AddressSpace::Private);
     Value storeBufferB =
         gpuAlloc(b, loc, bCopyPerThread, elementTypeB, AddressSpace::Private);
-
+    
+    bool isKContiguousDimA = maybeVecDimInfoA->vectorDim == GemmDimension::K;
+    bool isKContiguousDimB = maybeVecDimInfoB->vectorDim == GemmDimension::K;
     LDSLayoutConfigDim ldsLayoutConfigA =
         getLDSLayoutConfigDim(elementTypeA, kpack, maybeVecDimInfoA.value(),
                               directToLDS, accelLayoutA);
