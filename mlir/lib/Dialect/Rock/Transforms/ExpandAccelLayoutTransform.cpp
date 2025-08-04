@@ -88,13 +88,13 @@ static Value accelLayoutToStandard(OpBuilder &b, ArrayRef<int64_t> shape,
   if (kBlockFirst)
     // B x d x k x kpackperblock x dperblock x kpack -> B x d x dperblock x k x
     // kpackperblock x kpack
-    transposer.passThrough(ArrayRef<uint32_t>{0, 1, 4, 2, 3, 5},
-                           ArrayRef<uint32_t>{0, 1, 2, 3, 4, 5});
+    transposer.passThrough(ArrayRef<uint32_t>{0, 1, 2, 3, 4, 5},
+                           ArrayRef<uint32_t>{0, 1, 4, 2, 3, 5});
   else
     // B x k x d x kpackperblock x dperblock x kpack -> B x d x dperblock x k x
     // kpackperblock x kpack
-    transposer.passThrough(ArrayRef<uint32_t>{0, 2, 4, 1, 3, 5},
-                           ArrayRef<uint32_t>{0, 1, 2, 3, 4, 5});
+    transposer.passThrough(ArrayRef<uint32_t>{0, 1, 2, 3, 4, 5},
+                           ArrayRef<uint32_t>{0, 2, 4, 1, 3, 5});
   rock::TransformMapAttr transposerAttr = transposer.get();
 
   // B x d x dperblock x k x kpackperblock x kpack -> B x D x K (or B x K x D if
@@ -104,8 +104,8 @@ static Value accelLayoutToStandard(OpBuilder &b, ArrayRef<int64_t> shape,
   merger.passThrough(nameList[0]);
   uint32_t kOutDim = kBlockFirst ? 2 : 1;
   uint32_t dOutDim = kOutDim == 2 ? 1 : 2;
-  merger.merge(dimension, dOutDim, {nameList[kOutDim], nameList[4]});
-  merger.merge("k", kOutDim, {nameList[dOutDim], nameList[3], nameList[5]});
+  merger.merge(dimension, dOutDim, {nameList[dOutDim], nameList[4]});
+  merger.merge("k", kOutDim, {nameList[kOutDim], nameList[3], nameList[5]});
   rock::TransformMapAttr mergerAttr = merger.get();
 
   SmallVector<Attribute> transformAttrs{mergerAttr, transposerAttr,
@@ -124,10 +124,10 @@ struct ExpandAccelLayout
     StringRef dPerBlockName = op.getIsA() ? "mPerBlock" : "nPerBlock";
     bool kBlockFirst =
         (dName == "m" && !transposed) || (dName == "n" && transposed);
-    StringRef dim1 = kBlockFirst ? dName : "k";
-    StringRef dim2 = kBlockFirst ? "k" : dName;
+    StringRef dim1Name = kBlockFirst ? dName : "k";
+    StringRef dim2Name = kBlockFirst ? "k" : dName;
     SmallVector<StringRef> nameList = {
-        "g", dim1, dim2, "kPackPerBlock", dPerBlockName, "kPack"};
+        "g", dim1Name, dim2Name, "kPackPerBlock", dPerBlockName, "kPack"};
     auto maybeParams = op.getParams();
     if (!maybeParams.has_value())
       return b.notifyMatchFailure(op, "missing tuning parameters");
@@ -155,9 +155,11 @@ struct ExpandAccelLayout
 
     int64_t dBlocks = d / dPerBlock;
     int64_t kBlocks = k / kPerBlock;
+    int64_t dim1 = kBlockFirst ? dBlocks : kBlocks;
+    int64_t dim2 = kBlockFirst ? kBlocks : dBlocks;
 
-    SmallVector<int64_t> shapeList = {g,         kBlocks,
-                                      dBlocks,   gemmParams.getKpackPerBlock(),
+    SmallVector<int64_t> shapeList = {g,         dim1,
+                                      dim2,      gemmParams.getKpackPerBlock(),
                                       dPerBlock, gemmParams.getKpack()};
 
     Value result = accelLayoutToStandard(b, shapeList, nameList, dName,

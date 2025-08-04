@@ -3281,13 +3281,17 @@ static func::FuncOp createCpuGemmKernelWithMlir(ModuleOp module,
         bExpVal = expandArg(bVal, argTypes[1]),
         cExpVal = expandArg(cVal, argTypes[2]);
 
-  auto accelLayoutConversion = [&loc, &b](Value arg,
-                                          StringRef dimension) -> Value {
+  auto accelLayoutConversion = [&loc, &b](Value arg, StringRef dimension,
+                                          bool transposed) -> Value {
     // B x d x k x kpackperblock x dperblock x kpack -> B x d x dperblock x k x
     // kpackperblock x kpack
+    bool kBlockFirst =
+        (dimension == "m" && !transposed) || (dimension == "n" && transposed);
     auto inputShape = cast<ShapedType>(arg.getType()).getShape();
     assert(inputShape.size() == 6 && "Expected 6D input shape");
-    SmallVector<int64_t, 6> permutation = {0, 1, 4, 2, 3, 5};
+    SmallVector<int64_t, 6> permutation = {0, 2, 4, 1, 3, 5};
+    if (kBlockFirst)
+      permutation = {0, 1, 4, 2, 3, 5};
     SmallVector<int64_t, 6> outputShape;
     for (auto index : permutation)
       outputShape.push_back(inputShape[index]);
@@ -3304,16 +3308,22 @@ static func::FuncOp createCpuGemmKernelWithMlir(ModuleOp module,
 
     // B x d x dperblock x k x kpackperblock x kpack -> B x D x K
     // where D = d * dperblock and K = k * kpackperblock * kpack
-    ReassociationIndices firstDimReassociation = {1, 2};
-    ReassociationIndices secondDimReassociation = {3, 4, 5};
+    ReassociationIndices dReassociation = {1, 2};
+    ReassociationIndices kReassociation = {3, 4, 5};
 
     SmallVector<ReassociationIndices> reassociation = {
         {0}, // Batch dimension remains unchanged
-        firstDimReassociation,
-        secondDimReassociation};
+        kReassociation,
+        dReassociation};
+    if (kBlockFirst)
+      reassociation = {{0}, // Batch dimension remains unchanged
+                       dReassociation,
+                       kReassociation};
     int64_t dDim = transposedShape[1] * transposedShape[2];
     int64_t kDim = transposedShape[3] * transposedShape[4] * transposedShape[5];
-    SmallVector<int64_t> targetShape = {transposedShape[0], dDim, kDim};
+    SmallVector<int64_t> targetShape = {transposedShape[0], kDim, dDim};
+    if (kBlockFirst)
+      targetShape = {transposedShape[0], dDim, kDim};
     auto targetType =
         MemRefType::get(targetShape, transposedType.getElementType());
     Value collapsedTensor = b.create<memref::CollapseShapeOp>(
@@ -3321,9 +3331,9 @@ static func::FuncOp createCpuGemmKernelWithMlir(ModuleOp module,
     return collapsedTensor;
   };
   if (accelLayoutA)
-    aExpVal = accelLayoutConversion(aExpVal, "m");
+    aExpVal = accelLayoutConversion(aExpVal, "m", transposeA);
   if (accelLayoutB)
-    bExpVal = accelLayoutConversion(bExpVal, "n");
+    bExpVal = accelLayoutConversion(bExpVal, "n", transposeB);
 
   b.create<linalg::GenericOp>(
       loc, ValueRange{aExpVal, bExpVal}, ValueRange{cExpVal},

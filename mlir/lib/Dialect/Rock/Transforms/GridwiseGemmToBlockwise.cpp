@@ -154,8 +154,12 @@ computeCopyPerThreadDirectToLDS(Value matrix, Type elementType,
 
   int64_t copyFastestDimPerThread;
   if (accelLayout) {
-    assert(dim == GemmDimension::K);
-    copyKPerThread = math_util::gcd(kVectorLen, copyPerThread);
+    // For accel layout, K has to be the fastest changing dimension
+    if (dim != GemmDimension::K)
+      return failure();
+
+    copyKPerThread =
+        math_util::gcd(kVectorLen, math_util::gcd(copyPerThread, kpack));
     assert(dPerBlock % dThread == 0 &&
            "dPerBlock should be divisible by dThread");
     copyDPerThread = dPerBlock / dThread;
@@ -3223,7 +3227,7 @@ struct GridwiseGemmAccelRewritePattern
     int64_t M = aShape[2];
     int64_t N = bShape[2];
 
-    // Obtain whether tensors are in accel layout
+    // Obtain whether we will load tensors directly in accel layout
     bool accelLayoutA = op.getAAccelLayout();
     bool accelLayoutB = op.getBAccelLayout();
 
@@ -3357,7 +3361,7 @@ struct GridwiseGemmAccelRewritePattern
         gpuAlloc(b, loc, aCopyPerThread, elementTypeA, AddressSpace::Private);
     Value storeBufferB =
         gpuAlloc(b, loc, bCopyPerThread, elementTypeB, AddressSpace::Private);
-    
+
     bool isKContiguousDimA = maybeVecDimInfoA->vectorDim == GemmDimension::K;
     bool isKContiguousDimB = maybeVecDimInfoB->vectorDim == GemmDimension::K;
     LDSLayoutConfigDim ldsLayoutConfigA =
