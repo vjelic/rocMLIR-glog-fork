@@ -133,14 +133,29 @@ struct ExpandAccelLayout
       return b.notifyMatchFailure(op, "missing tuning parameters");
 
     auto params = maybeParams.value();
-    rock::RockAccelTuningParamAttrInterface gemmParams;
-    if (auto xdlopsParams = dyn_cast<rock::XdlopsGemmDerivedParamsAttr>(params))
-      gemmParams = xdlopsParams;
-    else
+    // rock::RockAccelTuningParamAttrInterface gemmParams;
+    int64_t mPerBlock, nPerBlock, kPackPerBlock, kPack;
+    kPack = params.getKpack();
+    if (auto xdlopsParams =
+            dyn_cast<rock::XdlopsGemmDerivedParamsAttr>(params)) {
+      mPerBlock = xdlopsParams.getMPerBlock();
+      nPerBlock = xdlopsParams.getNPerBlock();
+      kPackPerBlock = xdlopsParams.getKpackPerBlock();
+    } else if (auto wmmaParams = dyn_cast<rock::WmmaGemmParamsAttr>(params)) {
+      mPerBlock = wmmaParams.getMPerBlock();
+      nPerBlock = wmmaParams.getNPerBlock();
+      kPackPerBlock = wmmaParams.getKpackPerBlock();
+    } else if (auto gemmParams =
+                   dyn_cast<rock::GeneralGemmParamsAttr>(params)) {
+      mPerBlock = gemmParams.getMPerBlock();
+      nPerBlock = gemmParams.getNPerBlock();
+      assert(gemmParams.getKPerBlock() % kPack == 0 &&
+             "kPerBlock must be divisible by kPack");
+      kPackPerBlock = gemmParams.getKPerBlock() / kPack;
+    } else
       return b.notifyMatchFailure(op, "unsupported tuning parameters");
 
-    int64_t dPerBlock =
-        op.getIsA() ? gemmParams.getMPerBlock() : gemmParams.getNPerBlock();
+    int64_t dPerBlock = op.getIsA() ? mPerBlock : nPerBlock;
     ShapedType outputType = cast<ShapedType>(op.getType());
     if (outputType.getRank() != 3)
       return b.notifyMatchFailure(op, "wrong output type rank");
@@ -148,7 +163,7 @@ struct ExpandAccelLayout
     int64_t g = outputType.getShape()[0];
     int64_t d = outputType.getShape()[1];
     int64_t k = outputType.getShape()[2];
-    int64_t kPerBlock = gemmParams.getKpackPerBlock() * gemmParams.getKpack();
+    int64_t kPerBlock = kPackPerBlock * kPack;
     if (d % dPerBlock != 0 || k % kPerBlock != 0)
       return b.notifyMatchFailure(
           op, "output shape is not compatible with accel layout");
@@ -158,9 +173,8 @@ struct ExpandAccelLayout
     int64_t dim1 = kBlockFirst ? dBlocks : kBlocks;
     int64_t dim2 = kBlockFirst ? kBlocks : dBlocks;
 
-    SmallVector<int64_t> shapeList = {g,         dim1,
-                                      dim2,      gemmParams.getKpackPerBlock(),
-                                      dPerBlock, gemmParams.getKpack()};
+    SmallVector<int64_t> shapeList = {g,         dim1, dim2, kPackPerBlock,
+                                      dPerBlock, kPack};
 
     Value result = accelLayoutToStandard(b, shapeList, nameList, dName,
                                          kBlockFirst, op.getInput());
