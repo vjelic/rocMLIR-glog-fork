@@ -410,7 +410,8 @@ Value MfmaEmitter::wrapLDSBufferForLoad(OpBuilder &b, Location loc,
                                         Value buffer, int64_t blockSize,
                                         int64_t dInCopyPerThread,
                                         StringRef dName, bool rotateDWithK,
-                                        bool directToLds, GemmLDSLayout ldsLayout,
+                                        bool directToLds,
+                                        GemmLDSLayout ldsLayout,
                                         bool doSplitKAcrossThreadsFirst) const {
 
   StringRef thisWaveDim = dName == "m" ? "wave_m" : "wave_n";
@@ -810,7 +811,8 @@ Value WmmaEmitter::wrapLDSBufferForLoad(OpBuilder &b, Location loc,
                                         Value buffer, int64_t blockSize,
                                         int64_t dInCopyPerThread,
                                         StringRef dName, bool rotateDWithK,
-                                        bool directToLds, GemmLDSLayout ldsLayout,
+                                        bool directToLds,
+                                        GemmLDSLayout ldsLayout,
                                         bool doSplitKAcrossThreadsFirst) const {
 
   // Extract relevant tuning parameters
@@ -822,7 +824,8 @@ Value WmmaEmitter::wrapLDSBufferForLoad(OpBuilder &b, Location loc,
   int64_t kPack = tuningParams.getKpack();
   // TODO: gfx10 supports directToLDS. Implement it.
   assert(!directToLds && "direct to LDS not supported for WMMA");
-  assert(ldsLayout != GemmLDSLayout::KxDxkpack && "WMMA only supports LDS layout KxDxkpack for now");
+  assert(ldsLayout != GemmLDSLayout::KxDxkpack &&
+         "WMMA only supports LDS layout KxDxkpack for now");
 
   // Extract relevant emitter parameters
   int64_t kpackPerThread = accelEmitterParams.kpackPerThread;

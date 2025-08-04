@@ -13,7 +13,6 @@
 #include "mlir/Analysis/CallGraph.h"
 #include "mlir/Dialect/AMDGPU/Utils/Chipset.h"
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
-#include "mlir/Dialect/Rock/Tuning/GridwiseGemmParams.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Bufferization/IR/Bufferization.h"
 #include "mlir/Dialect/Bufferization/IR/BufferizationTypeInterfaces.h"
@@ -25,6 +24,7 @@
 #include "mlir/Dialect/Rock/IR/Rock.h"
 #include "mlir/Dialect/Rock/IR/RockTypes.h"
 #include "mlir/Dialect/Rock/Pipelines/Pipelines.h"
+#include "mlir/Dialect/Rock/Tuning/GridwiseGemmParams.h"
 #include "mlir/Dialect/Rock/Tuning/RockTuning.h"
 #include "mlir/Dialect/Rock/utility/AmdArchDb.h"
 #include "mlir/Dialect/Rock/utility/builderUtils.h"
@@ -336,15 +336,19 @@ static llvm::cl::opt<bool>
                llvm::cl::desc("whether matrix C is GxMxN (default) or GxNxM"),
                llvm::cl::init(false));
 
-static llvm::cl::opt<bool>
-    accelLayoutA("accelLayoutA",
-               llvm::cl::desc("whether matrix A is G x m x k x kpackperblock x mperblock x kpack. Where k = K / kperblock, m = M / mperblock and kperblock = kpackperblock * kpack"),
-               llvm::cl::init(false));
-               
-static llvm::cl::opt<bool>
-    accelLayoutB("accelLayoutB",
-               llvm::cl::desc("whether matrix A is G x n x k x kpackperblock x nperblock x kpack. Where k = K / kperblock, n = N / nperblock and kperblock = kpackperblock * kpack"),
-               llvm::cl::init(false));
+static llvm::cl::opt<bool> accelLayoutA(
+    "accelLayoutA",
+    llvm::cl::desc("whether matrix A is G x m x k x kpackperblock x mperblock "
+                   "x kpack. Where k = K / kperblock, m = M / mperblock and "
+                   "kperblock = kpackperblock * kpack"),
+    llvm::cl::init(false));
+
+static llvm::cl::opt<bool> accelLayoutB(
+    "accelLayoutB",
+    llvm::cl::desc("whether matrix A is G x n x k x kpackperblock x nperblock "
+                   "x kpack. Where k = K / kperblock, n = N / nperblock and "
+                   "kperblock = kpackperblock * kpack"),
+    llvm::cl::init(false));
 
 static llvm::cl::opt<rock::StoreMethod> storeMethod(
     "store-method", llvm::cl::desc("storage method for gemm"),
@@ -2242,7 +2246,8 @@ createCPUConvFunc(ModuleOp module,
 }
 
 static void getGemmTypes(ArrayRef<Type> elemTypes,
-                         const rock::GemmFeatures& features, SmallVectorImpl<Type> &result, bool isCpuVerifier) {
+                         const rock::GemmFeatures &features,
+                         SmallVectorImpl<Type> &result, bool isCpuVerifier) {
   Type cElemType = elemTypes[2];
   // Verify in int64_t to detect overflow
   if (elemTypes[0].isInteger(8) && isCpuVerifier)
@@ -2250,49 +2255,52 @@ static void getGemmTypes(ArrayRef<Type> elemTypes,
   SmallVector<int64_t> aDims, bDims, cDims;
 
   int64_t mPerBlock, nPerBlock, kpackPerBlock, kPack, kPerBlock, kBlocks;
-  if(isCpuVerifier && (accelLayoutA || accelLayoutB)) {
+  if (isCpuVerifier && (accelLayoutA || accelLayoutB)) {
     assert(!perfConfig.empty() &&
            "perfConfig must be set when accelLayoutA or accelLayoutB is true");
     auto populateParamsAccelPtr = rock::PopulateParamsAccel::select(features);
     rock::InitParamsAccel validParams;
     bool isValidPerfConfig = validParams.deserialize(perfConfig);
-    assert(isValidPerfConfig &&
-           "perfConfig must be valid");
+    assert(isValidPerfConfig && "perfConfig must be valid");
 
     mPerBlock = validParams.gemmMPerBlock;
     nPerBlock = validParams.gemmNPerBlock;
     kpackPerBlock = validParams.gemmKPerBlock;
     kPack = validParams.gemmKPack;
-    
+
     kPerBlock = kpackPerBlock * kPack;
     kBlocks = gemmK / kPerBlock;
 
-    assert(gemmK % kPerBlock == 0 &&
-           "gemmK must be divisible by kPerBlock");
+    assert(gemmK % kPerBlock == 0 && "gemmK must be divisible by kPerBlock");
   }
 
-  if(accelLayoutA && isCpuVerifier) {
-    assert(gemmM % mPerBlock == 0 &&
-          "gemmM must be divisible by mPerBlock");
+  if (accelLayoutA && isCpuVerifier) {
+    assert(gemmM % mPerBlock == 0 && "gemmM must be divisible by mPerBlock");
     int64_t mBlocks = gemmM / mPerBlock;
 
-    aDims = {groupSize, transposeA ? kBlocks : mBlocks, transposeA ? mBlocks : kBlocks, kpackPerBlock, mPerBlock, kPack};
+    aDims = {groupSize,
+             transposeA ? kBlocks : mBlocks,
+             transposeA ? mBlocks : kBlocks,
+             kpackPerBlock,
+             mPerBlock,
+             kPack};
   } else {
-    aDims = {groupSize, transposeA ? gemmK : gemmM,
-            transposeA ? gemmM : gemmK};
+    aDims = {groupSize, transposeA ? gemmK : gemmM, transposeA ? gemmM : gemmK};
   }
-  if(accelLayoutB && isCpuVerifier) {
-    assert(gemmN % nPerBlock == 0 &&
-          "gemmN must be divisible by nPerBlock");
+  if (accelLayoutB && isCpuVerifier) {
+    assert(gemmN % nPerBlock == 0 && "gemmN must be divisible by nPerBlock");
     int64_t nBlocks = gemmN / nPerBlock;
 
-    bDims = {groupSize, transposeB ? nBlocks : kBlocks, transposeB ? kBlocks : nBlocks, kpackPerBlock, nPerBlock, kPack};
+    bDims = {groupSize,
+             transposeB ? nBlocks : kBlocks,
+             transposeB ? kBlocks : nBlocks,
+             kpackPerBlock,
+             nPerBlock,
+             kPack};
   } else {
-    bDims = {groupSize, transposeB ? gemmN : gemmK,
-            transposeB ? gemmK : gemmN};
+    bDims = {groupSize, transposeB ? gemmN : gemmK, transposeB ? gemmK : gemmN};
   }
-  cDims = {groupSize, transposeC ? gemmN : gemmM,
-          transposeC ? gemmM : gemmN};
+  cDims = {groupSize, transposeC ? gemmN : gemmM, transposeC ? gemmM : gemmN};
 
   MemRefType aType = MemRefType::get(aDims, elemTypes[0]),
              bType = MemRefType::get(bDims, elemTypes[1]),
@@ -2347,21 +2355,25 @@ static func::FuncOp createGpuGemmKernel(ModuleOp module,
                                     expandedArgs);
 
   Value aVal = expandedArgs[0], bVal = expandedArgs[1], cVal = expandedArgs[2];
-  if(accelLayoutA) {
+  if (accelLayoutA) {
     aVal = b.create<rock::AccelLayoutTransformOp>(
-        loc, argTypes[0], func.getArgument(0), /*isA=*/b.getUnitAttr(), /*transposed=*/transposeA ? b.getUnitAttr() : nullptr, /*params=*/nullptr);
+        loc, argTypes[0], func.getArgument(0), /*isA=*/b.getUnitAttr(),
+        /*transposed=*/transposeA ? b.getUnitAttr() : nullptr,
+        /*params=*/nullptr);
   }
-  if(accelLayoutB) {
+  if (accelLayoutB) {
     bVal = b.create<rock::AccelLayoutTransformOp>(
-        loc, argTypes[1], func.getArgument(1), /*isA=*/nullptr, /*transposed=*/transposeB ? b.getUnitAttr() : nullptr, /*params=*/nullptr);
+        loc, argTypes[1], func.getArgument(1), /*isA=*/nullptr,
+        /*transposed=*/transposeB ? b.getUnitAttr() : nullptr,
+        /*params=*/nullptr);
   }
 
   IntegerAttr numCUAttr =
       (num_cu.getNumOccurrences() > 0 ? b.getI32IntegerAttr(num_cu) : nullptr);
   auto gemm = b.create<rock::GemmOp>(
       loc, /*resultTypes=*/TypeRange{}, aVal, bVal, cVal, transposeA,
-      transposeB, transposeC, accelLayoutA, accelLayoutB, archAttr.getValue(), numCUAttr, params.features,
-      storeMethod,
+      transposeB, transposeC, accelLayoutA, accelLayoutB, archAttr.getValue(),
+      numCUAttr, params.features, storeMethod,
       /*blockSize=*/nullptr, /*gridSize=*/nullptr, /*params=*/nullptr);
 
   if (!params.perfConfig.empty())
@@ -3268,23 +3280,24 @@ static func::FuncOp createCpuGemmKernelWithMlir(ModuleOp module,
   Value aExpVal = expandArg(aVal, argTypes[0]),
         bExpVal = expandArg(bVal, argTypes[1]),
         cExpVal = expandArg(cVal, argTypes[2]);
-  
-  auto accelLayoutConversion = [&loc, &b](Value arg, StringRef dimension) -> Value {
-    // B x d x k x kpackperblock x dperblock x kpack -> B x d x dperblock x k x kpackperblock x kpack
+
+  auto accelLayoutConversion = [&loc, &b](Value arg,
+                                          StringRef dimension) -> Value {
+    // B x d x k x kpackperblock x dperblock x kpack -> B x d x dperblock x k x
+    // kpackperblock x kpack
     auto inputShape = cast<ShapedType>(arg.getType()).getShape();
     assert(inputShape.size() == 6 && "Expected 6D input shape");
     SmallVector<int64_t, 6> permutation = {0, 1, 4, 2, 3, 5};
     SmallVector<int64_t, 6> outputShape;
-    for(auto index : permutation)
+    for (auto index : permutation)
       outputShape.push_back(inputShape[index]);
 
-    auto outputMemRefType = MemRefType::get(outputShape, cast<ShapedType>(arg.getType()).getElementType());
+    auto outputMemRefType = MemRefType::get(
+        outputShape, cast<ShapedType>(arg.getType()).getElementType());
     Value allocOp = b.create<memref::AllocOp>(loc, outputMemRefType);
 
-    auto transposeOp = b.create<linalg::TransposeOp>(loc, 
-                                                      arg,
-                                                      allocOp,
-                                                      permutation);
+    auto transposeOp =
+        b.create<linalg::TransposeOp>(loc, arg, allocOp, permutation);
     Value transposedTensor = transposeOp.getDpsInitOperand(0)->get();
     auto transposedType = cast<MemRefType>(transposedTensor.getType());
     ArrayRef<int64_t> transposedShape = transposedType.getShape();
@@ -3297,27 +3310,19 @@ static func::FuncOp createCpuGemmKernelWithMlir(ModuleOp module,
     SmallVector<ReassociationIndices> reassociation = {
         {0}, // Batch dimension remains unchanged
         firstDimReassociation,
-        secondDimReassociation
-    };
+        secondDimReassociation};
     int64_t dDim = transposedShape[1] * transposedShape[2];
     int64_t kDim = transposedShape[3] * transposedShape[4] * transposedShape[5];
-    SmallVector<int64_t> targetShape = {
-        transposedShape[0],
-        dDim, 
-        kDim
-    };
-    auto targetType = MemRefType::get(targetShape, transposedType.getElementType());
+    SmallVector<int64_t> targetShape = {transposedShape[0], dDim, kDim};
+    auto targetType =
+        MemRefType::get(targetShape, transposedType.getElementType());
     Value collapsedTensor = b.create<memref::CollapseShapeOp>(
-        loc, 
-        targetType,
-        transposedTensor,
-        reassociation
-    );
+        loc, targetType, transposedTensor, reassociation);
     return collapsedTensor;
   };
-  if(accelLayoutA)
+  if (accelLayoutA)
     aExpVal = accelLayoutConversion(aExpVal, "m");
-  if(accelLayoutB)
+  if (accelLayoutB)
     bExpVal = accelLayoutConversion(bExpVal, "n");
 
   b.create<linalg::GenericOp>(

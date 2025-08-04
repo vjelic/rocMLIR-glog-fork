@@ -6,7 +6,7 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// This pass is needed in order to have a common MLIR representation for 
+// This pass is needed in order to have a common MLIR representation for
 // tuning when using accel layout for tensors.
 //
 //===----------------------------------------------------------------------===//
@@ -47,8 +47,10 @@ struct RockExpandAccelLayoutTransformPass
 };
 } // end anonymous namespace
 
-static Value accelLayoutToStandard(
-    OpBuilder &b, ArrayRef<int64_t> shape, ArrayRef<StringRef> nameList, StringRef dimension, bool kBlockFirst, Value accelLayoutTensor) {
+static Value accelLayoutToStandard(OpBuilder &b, ArrayRef<int64_t> shape,
+                                   ArrayRef<StringRef> nameList,
+                                   StringRef dimension, bool kBlockFirst,
+                                   Value accelLayoutTensor) {
   assert(dimension == "m" || dimension == "n");
   Location loc = accelLayoutTensor.getLoc();
   auto logicalShapedTy = cast<ShapedType>(accelLayoutTensor.getType());
@@ -58,8 +60,7 @@ static Value accelLayoutToStandard(
   SmallVector<uint32_t> nonUnitUpperDim;
   SmallVector<int64_t> nonUnitUpperSize;
   SmallVector<StringRef> nonUnitUpperName;
-  for (auto [upperDim, name, dimLen] :
-        llvm::zip(upperDims, nameList, shape)) {
+  for (auto [upperDim, name, dimLen] : llvm::zip(upperDims, nameList, shape)) {
     if (dimLen != 1) {
       nonUnitUpperDim.push_back(upperDim);
       nonUnitUpperName.push_back(name);
@@ -72,11 +73,10 @@ static Value accelLayoutToStandard(
     nonUnitUpperName.push_back(nameList.back());
     nonUnitUpperSize.push_back(shape.back());
   }
-  
-  rock::BottomUpTMBuilder flattener(b, {"raw"}, logicalShapedTy.getNumElements(),
-                              loc);
-  flattener.unmerge(nonUnitUpperName, nonUnitUpperDim, "raw",
-                    nonUnitUpperSize);
+
+  rock::BottomUpTMBuilder flattener(b, {"raw"},
+                                    logicalShapedTy.getNumElements(), loc);
+  flattener.unmerge(nonUnitUpperName, nonUnitUpperDim, "raw", nonUnitUpperSize);
   for (auto dim : upperDims) {
     if (!llvm::is_contained(nonUnitUpperDim, dim)) {
       flattener.addDim(nameList[dim], dim, shape[dim]);
@@ -85,15 +85,20 @@ static Value accelLayoutToStandard(
   rock::TransformMapAttr flattenerAttr = flattener.get();
 
   auto transposer = rock::BottomUpTMBuilder::above(flattener, flattenerAttr);
-  if(kBlockFirst)
-    // B x d x k x kpackperblock x dperblock x kpack -> B x d x dperblock x k x kpackperblock x kpack
-    transposer.passThrough(ArrayRef<uint32_t>{0, 1, 4, 2, 3, 5}, ArrayRef<uint32_t>{0, 1, 2, 3, 4, 5});
-  else 
-    // B x k x d x kpackperblock x dperblock x kpack -> B x d x dperblock x k x kpackperblock x kpack
-    transposer.passThrough(ArrayRef<uint32_t>{0, 2, 4, 1, 3, 5}, ArrayRef<uint32_t>{0, 1, 2, 3, 4, 5});
+  if (kBlockFirst)
+    // B x d x k x kpackperblock x dperblock x kpack -> B x d x dperblock x k x
+    // kpackperblock x kpack
+    transposer.passThrough(ArrayRef<uint32_t>{0, 1, 4, 2, 3, 5},
+                           ArrayRef<uint32_t>{0, 1, 2, 3, 4, 5});
+  else
+    // B x k x d x kpackperblock x dperblock x kpack -> B x d x dperblock x k x
+    // kpackperblock x kpack
+    transposer.passThrough(ArrayRef<uint32_t>{0, 2, 4, 1, 3, 5},
+                           ArrayRef<uint32_t>{0, 1, 2, 3, 4, 5});
   rock::TransformMapAttr transposerAttr = transposer.get();
 
-  // B x d x dperblock x k x kpackperblock x kpack -> B x D x K (or B x K x D if transposed or B tensor)
+  // B x d x dperblock x k x kpackperblock x kpack -> B x D x K (or B x K x D if
+  // transposed or B tensor)
   auto merger = rock::BottomUpTMBuilder::above(transposer, transposerAttr);
   // passThrough the batch dimension
   merger.passThrough(nameList[0]);
@@ -103,11 +108,13 @@ static Value accelLayoutToStandard(
   merger.merge("k", kOutDim, {nameList[dOutDim], nameList[3], nameList[5]});
   rock::TransformMapAttr mergerAttr = merger.get();
 
-  SmallVector<Attribute> transformAttrs{mergerAttr, transposerAttr, flattenerAttr};
+  SmallVector<Attribute> transformAttrs{mergerAttr, transposerAttr,
+                                        flattenerAttr};
   return rock::transform(b, accelLayoutTensor, b.getArrayAttr(transformAttrs));
 }
 
-struct ExpandAccelLayout : public OpRewritePattern<rock::AccelLayoutTransformOp> {
+struct ExpandAccelLayout
+    : public OpRewritePattern<rock::AccelLayoutTransformOp> {
   using OpRewritePattern<rock::AccelLayoutTransformOp>::OpRewritePattern;
 
   LogicalResult matchAndRewrite(rock::AccelLayoutTransformOp op,
@@ -115,12 +122,14 @@ struct ExpandAccelLayout : public OpRewritePattern<rock::AccelLayoutTransformOp>
     StringRef dName = op.getIsA() ? "m" : "n";
     bool transposed = op.getTransposed();
     StringRef dPerBlockName = op.getIsA() ? "mPerBlock" : "nPerBlock";
-    bool kBlockFirst = (dName == "m" && !transposed) || (dName == "n" && transposed);
+    bool kBlockFirst =
+        (dName == "m" && !transposed) || (dName == "n" && transposed);
     StringRef dim1 = kBlockFirst ? dName : "k";
     StringRef dim2 = kBlockFirst ? "k" : dName;
-    SmallVector<StringRef> nameList = {"g", dim1, dim2, "kPackPerBlock", dPerBlockName, "kPack"};
+    SmallVector<StringRef> nameList = {
+        "g", dim1, dim2, "kPackPerBlock", dPerBlockName, "kPack"};
     auto maybeParams = op.getParams();
-    if(!maybeParams.has_value())
+    if (!maybeParams.has_value())
       return b.notifyMatchFailure(op, "missing tuning parameters");
 
     auto params = maybeParams.value();
@@ -129,25 +138,30 @@ struct ExpandAccelLayout : public OpRewritePattern<rock::AccelLayoutTransformOp>
       gemmParams = xdlopsParams;
     else
       return b.notifyMatchFailure(op, "unsupported tuning parameters");
-      
-    int64_t dPerBlock = op.getIsA() ? gemmParams.getMPerBlock() : gemmParams.getNPerBlock();
+
+    int64_t dPerBlock =
+        op.getIsA() ? gemmParams.getMPerBlock() : gemmParams.getNPerBlock();
     ShapedType outputType = cast<ShapedType>(op.getType());
-    if(outputType.getRank() != 3) 
+    if (outputType.getRank() != 3)
       return b.notifyMatchFailure(op, "wrong output type rank");
 
     int64_t g = outputType.getShape()[0];
     int64_t d = outputType.getShape()[1];
     int64_t k = outputType.getShape()[2];
     int64_t kPerBlock = gemmParams.getKpackPerBlock() * gemmParams.getKpack();
-    if(d % dPerBlock != 0 || k % kPerBlock != 0)
-      return b.notifyMatchFailure(op, "output shape is not compatible with accel layout");
+    if (d % dPerBlock != 0 || k % kPerBlock != 0)
+      return b.notifyMatchFailure(
+          op, "output shape is not compatible with accel layout");
 
     int64_t dBlocks = d / dPerBlock;
     int64_t kBlocks = k / kPerBlock;
 
-    SmallVector<int64_t> shapeList = {g, kBlocks, dBlocks, gemmParams.getKpackPerBlock(), dPerBlock, gemmParams.getKpack()};
+    SmallVector<int64_t> shapeList = {g,         kBlocks,
+                                      dBlocks,   gemmParams.getKpackPerBlock(),
+                                      dPerBlock, gemmParams.getKpack()};
 
-    Value result = accelLayoutToStandard(b, shapeList, nameList, dName, kBlockFirst, op.getInput());
+    Value result = accelLayoutToStandard(b, shapeList, nameList, dName,
+                                         kBlockFirst, op.getInput());
     b.replaceOp(op, result);
 
     return success();
@@ -161,14 +175,14 @@ void RockExpandAccelLayoutTransformPass::runOnOperation() {
   // disable for non-kernels
   if (!func->hasAttr("kernel"))
     return;
-  
+
   target.addIllegalOp<rock::AccelLayoutTransformOp>();
   target.markUnknownOpDynamicallyLegal([](Operation *) { return true; });
 
   RewritePatternSet patterns(ctx);
   patterns.add<ExpandAccelLayout>(ctx);
-  if (failed(applyFullConversion(getOperation(), target,
-                                    std::move(patterns)))) {
+  if (failed(
+          applyFullConversion(getOperation(), target, std::move(patterns)))) {
     signalPassFailure();
   }
 }

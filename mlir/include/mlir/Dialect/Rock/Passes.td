@@ -189,7 +189,9 @@ def RockFindFirstGemmIndexPass
 
 def RockExpandAccelLayoutTransformPass
     : Pass<"rock-expand-accel-layout-transform", "::mlir::func::FuncOp"> {
-  let summary = "This pass is needed in order to have a common MLIR representation for tuning when using accel layout for tensors.";
+  let summary =
+      "This pass is needed in order to have a common MLIR representation for "
+      "tuning when using accel layout for tensors.";
   let dependentDialects = ["rock::RockDialect", "func::FuncDialect"];
 }
 

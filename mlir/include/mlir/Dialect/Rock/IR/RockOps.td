@@ -134,27 +134,21 @@ def Rock_ConvBwdWeightOp : Rock_ConvOpBase<"conv_bwd_weight">
   }];
 }
 
-def Rock_GemmOp :
-    Rock_Op<"gemm", [DeclareOpInterfaceMethods<RockGemmWrapperInterface>, RockFusionRoot]>,
-    Arguments<(ins Arg<TensorOrMemRefOf<GemmInputTypes>,
-                       "matrix A", [MemRead]>:$a,
-                   Arg<TensorOrMemRefOf<GemmInputTypes>,
-                       "matrix B", [MemRead]>:$b,
-                   Arg<TensorOrMemRefOf<GemmOutputTypes>,
-                       "matrix C", [MemRead, MemWrite]>:$c,
-                   UnitAttr:$aTransposed,
-                   UnitAttr:$bTransposed,
-                   UnitAttr:$cTransposed,
-                   UnitAttr:$aAccelLayout,
-                   UnitAttr:$bAccelLayout,
-                   StrAttr:$arch,
-                   OptionalAttr<I32Attr>:$numCU,
-                   Rock_GemmFeaturesAttr:$features,
-                   StoreMethodAttr:$storeMethod,
-                   OptionalAttr<I32Attr>:$derivedBlockSize,
-                   OptionalAttr<I32Attr>:$gridSize,
-                   OptionalAttr<RockTuningParamAttrInterface>:$params)>,
-    Results<(outs Optional<AnyRankedTensor>:$result)> {
+def Rock_GemmOp
+    : Rock_Op<"gemm", [DeclareOpInterfaceMethods<RockGemmWrapperInterface>,
+                       RockFusionRoot]>,
+      Arguments<(
+          ins Arg<TensorOrMemRefOf<GemmInputTypes>, "matrix A", [MemRead]>:$a,
+          Arg<TensorOrMemRefOf<GemmInputTypes>, "matrix B", [MemRead]>:$b,
+          Arg<TensorOrMemRefOf<GemmOutputTypes>,
+              "matrix C", [MemRead, MemWrite]>:$c,
+          UnitAttr:$aTransposed, UnitAttr:$bTransposed, UnitAttr:$cTransposed,
+          UnitAttr:$aAccelLayout, UnitAttr:$bAccelLayout, StrAttr:$arch,
+          OptionalAttr<I32Attr>:$numCU, Rock_GemmFeaturesAttr:$features,
+          StoreMethodAttr:$storeMethod, OptionalAttr<I32Attr>:$derivedBlockSize,
+          OptionalAttr<I32Attr>:$gridSize,
+          OptionalAttr<RockTuningParamAttrInterface>:$params)>,
+      Results<(outs Optional<AnyRankedTensor>:$result)> {
   let summary = "General matrix multiplication (GEMM)";
   let description = [{
     Performs the operation C += A * B.
@@ -182,7 +176,6 @@ def Rock_GemmOp :
     `:` type($c) `=` type($a) `*` type($b) (`->` type($result)^)?
   }];
 }
-
 
 def Rock_ReduceOp :
   Rock_Op<"reduce", [AllElementTypesMatch<["in", "out"]>]>,
@@ -533,20 +526,17 @@ def Rock_GridwiseGemmOp :
 }
 
 // gridwise_gemm_accel
-def Rock_GridwiseGemmAccelOp :
-    Rock_Op<"gridwise_gemm_accel", [RockFusionRoot]>,
-    Arguments<(ins Arg<MemRefRankOf<GemmInputTypes, [3]>, "matrix A view", [MemRead]>:$a,
-                   Arg<MemRefRankOf<GemmInputTypes, [3]>, "matrix B view", [MemRead]>:$b,
-                   Arg<MemRefRankOf<GemmAccumulatorTypes, [3]>, "matrix C view", [MemRead, MemWrite]>:$c,
-                   UnitAttr:$aAccelLayout,
-                   UnitAttr:$bAccelLayout,
-                   StrAttr:$arch,
-                   I32Attr:$numCU,
-                   Rock_GemmFeaturesAttr:$features,
-                   StoreMethodAttr:$storeMethod,
-                   I32Attr:$blockSize,
-                   I32Attr:$gridSize,
-                   RockAccelTuningParamAttrInterface:$params)> {
+def Rock_GridwiseGemmAccelOp
+    : Rock_Op<"gridwise_gemm_accel", [RockFusionRoot]>,
+      Arguments<(ins Arg<MemRefRankOf<GemmInputTypes, [3]>,
+                         "matrix A view", [MemRead]>:$a,
+          Arg<MemRefRankOf<GemmInputTypes, [3]>, "matrix B view", [MemRead]>:$b,
+          Arg<MemRefRankOf<GemmAccumulatorTypes, [3]>,
+              "matrix C view", [MemRead, MemWrite]>:$c,
+          UnitAttr:$aAccelLayout, UnitAttr:$bAccelLayout, StrAttr:$arch,
+          I32Attr:$numCU, Rock_GemmFeaturesAttr:$features,
+          StoreMethodAttr:$storeMethod, I32Attr:$blockSize, I32Attr:$gridSize,
+          RockAccelTuningParamAttrInterface:$params)> {
   let summary = "Gridwise GEMM accelerated version";
   let description = [{
     The `rock.gridwise_gemm` op computes gridwise GEMM with acceleration.
@@ -1390,8 +1380,9 @@ def Rock_BlockwiseGemmAccelOp
       Arguments<(ins MemRefOf<LdsBufferTypes>:$matrixA,
           MemRefOf<LdsBufferTypes>:$matrixB, I32Attr:$inMPerThread,
           I32Attr:$inNPerThread, UnitAttr:$rotateMWithK, UnitAttr:$rotateNWithK,
-          UnitAttr:$directToLDS, Rock_GemmLDSLayoutAttr:$ldsLayoutA, Rock_GemmLDSLayoutAttr:$ldsLayoutB,
-          MemRefOf<AccelArgTypes>:$bufferA, MemRefOf<AccelArgTypes>:$bufferB,
+          UnitAttr:$directToLDS, Rock_GemmLDSLayoutAttr:$ldsLayoutA,
+          Rock_GemmLDSLayoutAttr:$ldsLayoutB, MemRefOf<AccelArgTypes>:$bufferA,
+          MemRefOf<AccelArgTypes>:$bufferB,
           AnyTypeOf<[MemRefOf<AccelArgTypes>,
                      MemRefOf<LdsBufferTypes>]>:$bufferAForLoad,
           AnyTypeOf<[MemRefOf<AccelArgTypes>,
@@ -1554,23 +1545,24 @@ def Rock_StageOp :
     let regions = (region AnyRegion:$region);
     let hasCustomAssemblyFormat = 1;
   }
-  
-def Rock_AccelLayoutTransformOp :
-    Rock_Op<"accel_layout_transform", [Pure, ViewLikeOpInterface]>,
-    Arguments<(ins AnyShaped:$input, UnitAttr:$isA, UnitAttr:$transposed, OptionalAttr<RockTuningParamAttrInterface>:$params)>,
-    Results<(outs AnyShaped:$output)> {
-  let summary = "Tensor transformation";
-  let description = [{
+
+  def Rock_AccelLayoutTransformOp
+      : Rock_Op<"accel_layout_transform", [Pure, ViewLikeOpInterface]>,
+        Arguments<(ins AnyShaped:$input, UnitAttr:$isA, UnitAttr:$transposed,
+            OptionalAttr<RockTuningParamAttrInterface>:$params)>,
+        Results<(outs AnyShaped:$output)> {
+    let summary = "Tensor transformation";
+    let description = [{
     This operation represents a transformation of a tensor to an accelerator-specific layout.
-    The layout is [G x m x k x kpackperblock x mperblock x kpack].
+    The layout is [G x m x k x kpackperblock x mperblock x kpack] or [G x k x m x kpackperblock x mperblock x kpack].
   }];
-  let assemblyFormat = [{
+    let assemblyFormat = [{
     $input attr-dict `:` type($input) `to` type($output)
   }];
 
-  let extraClassDeclaration = [{
+    let extraClassDeclaration = [{
     Value getViewSource() { return getInput(); }
   }];
-}
+  }
 
 #endif // ROCK_OPS
