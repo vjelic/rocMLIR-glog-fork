@@ -167,6 +167,14 @@ computeCopyPerThreadDirectToLDS(Value matrix, Type elementType,
            "kPerBlock should be divisible by (copyKPerThread*kThread)");
     repeatKPerThread = kPerBlock / (copyKPerThread * kThread);
     copyFastestDimPerThread = copyKPerThread;
+
+    if (copyKPerThread != kpack)
+      // each thread has to load kpack elements along K
+      return failure();
+
+    // TODO: try to relax this requirements
+    if (repeatKPerThread != 1 || copyDPerThread != 1)
+      return failure();
   } else {
     if (dim == GemmDimension::MorN) {
       copyDPerThread = math_util::gcd(dVectorLen, copyPerThread);

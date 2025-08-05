@@ -3313,22 +3313,29 @@ static func::FuncOp createCpuGemmKernelWithMlir(ModuleOp module,
 
     SmallVector<ReassociationIndices> reassociation = {
         {0}, // Batch dimension remains unchanged
-        kReassociation,
-        dReassociation};
-    if (kBlockFirst)
-      reassociation = {{0}, // Batch dimension remains unchanged
-                       dReassociation,
-                       kReassociation};
+        dReassociation,
+        kReassociation};
     int64_t dDim = transposedShape[1] * transposedShape[2];
     int64_t kDim = transposedShape[3] * transposedShape[4] * transposedShape[5];
-    SmallVector<int64_t> targetShape = {transposedShape[0], kDim, dDim};
-    if (kBlockFirst)
-      targetShape = {transposedShape[0], dDim, kDim};
+    SmallVector<int64_t> targetShape = {transposedShape[0], dDim, kDim};
     auto targetType =
         MemRefType::get(targetShape, transposedType.getElementType());
-    Value collapsedTensor = b.create<memref::CollapseShapeOp>(
+    Value result = b.create<memref::CollapseShapeOp>(
         loc, targetType, transposedTensor, reassociation);
-    return collapsedTensor;
+
+    if (!kBlockFirst) {
+      SmallVector<int64_t, 3> outputShape = {targetShape[0], targetShape[2],
+                                             targetShape[1]};
+      auto outputMemRefType = MemRefType::get(
+          outputShape, cast<ShapedType>(result.getType()).getElementType());
+      Value allocOp = b.create<memref::AllocOp>(loc, outputMemRefType);
+      SmallVector<int64_t, 3> permutationTranpose = {0, 2, 1};
+      auto transposeOp = b.create<linalg::TransposeOp>(loc, result, allocOp,
+                                                       permutationTranpose);
+      result = transposeOp.getDpsInitOperand(0)->get();
+    }
+
+    return result;
   };
   if (accelLayoutA)
     aExpVal = accelLayoutConversion(aExpVal, "m", transposeA);

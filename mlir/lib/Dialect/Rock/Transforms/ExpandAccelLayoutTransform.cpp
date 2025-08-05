@@ -133,7 +133,6 @@ struct ExpandAccelLayout
       return b.notifyMatchFailure(op, "missing tuning parameters");
 
     auto params = maybeParams.value();
-    // rock::RockAccelTuningParamAttrInterface gemmParams;
     int64_t mPerBlock, nPerBlock, kPackPerBlock, kPack;
     kPack = params.getKpack();
     if (auto xdlopsParams =
