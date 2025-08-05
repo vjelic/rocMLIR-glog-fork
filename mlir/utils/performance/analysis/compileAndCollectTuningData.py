@@ -137,7 +137,7 @@ def parse_mfma_wmma_instructions(content):
     
     # Assert that there is only one unique instruction
     size = len(unique_instructions)
-    assert size == 1, \
+    assert size <= 1, \
            f"Expected exactly one unique MFMA/WMMA instruction, found: {size}"
     
     return unique_instructions
@@ -202,7 +202,8 @@ def parse_results(debug_output):
     tuning_data.vgpr_spills = int(vgpr_spill_match.group(1))
 
     mfma_wmma_instructions = parse_mfma_wmma_instructions(debug_output)
-    tuning_data.mfma_wmma_instruction = mfma_wmma_instructions[0]
+    if mfma_wmma_instructions:
+        tuning_data.mfma_wmma_instruction = mfma_wmma_instructions[0]
 
     return tuning_data
     
@@ -353,15 +354,9 @@ def extract_MNG_from_config(config, test_args, operation):
         elif operation.lower() in ['conv', 'convfp16', 'convbfp16', 'convint8',
                                    'convfp8']:
             # For conv ops: M = k, N = calculateConvN, G = g
+            G = int(arg_dict.get('-g', 1))
             M = int(arg_dict.get('-k', 0))
             N = calculateConvN(arg_dict)
-            G = int(arg_dict.get('-g', 0))
-
-            # We currently cannot handle group conv, so if we come across a G
-            # value that is greater than 1, we will need to fail
-            if G > 1:
-                print(f"Error: Group convolution (G > 1) is not supported")
-                sys.exit(1)
             
         else:
             print(f"Warning: Unknown operation type '{operation}'")
@@ -410,6 +405,13 @@ def compile_and_collect_data(config, perf_config, operation, binaries):
                                   timestamp)
     if isinstance(debug_output, bytes):
         debug_output = debug_output.decode('utf-8')
+
+    # If the debug output is empty, then this means that the compilation
+    # pipeline failed. We expect this to happe for some of the invalid configs
+    if not debug_output:
+        print(f"Warning: Compilation failed for config {config}. "
+              "Skipping calculations.")
+        return None
 
     # Parse the results from the compiled config
     results = parse_results(debug_output)
