@@ -64,8 +64,7 @@ GFX_CHIP_RE = re.compile(r"gfx[0-9a-z]+")
 INFO_ARCH_NAME = re.compile(r"Name:\s*(.*)")
 INFO_ARCH_CU = re.compile(r"Compute Unit:\s*(.*)")
 
-# This map stores the header to flag mapping and a boolean value denoting
-# if the flag require a value
+# This map stores the header to flag mapping
 DEBUG_HEADER_TO_FLAG = {
     'DataType': '-t',
     'OutDataType': '-out_datatype',
@@ -288,24 +287,24 @@ def parse_debug_db_row(row) -> str:
 
 
 # Tuning debug databases
-MaybeTuningDb = Optional[Dict[Tuple[str, str], str]]
-MaybeTuningDbWithCU = Optional[Dict[Tuple[str, str, str], str]]
-def read_debug_db(path: Optional[str]) -> MaybeTuningDbWithCU:
+MaybeDebugDb = Optional[Dict[Tuple[str, str, str, str, str], str]]
+def read_debug_db(path: [str]) -> MaybeDebugDb:
     try:
         df = pd.read_csv(path, sep='\t')
         ret = {}
         for _, row in df.iterrows():
             # If this was not a valid config, i.e., it did not generate a
             # TFLOPs value, then we can skip it
-            if not(pd.isna(row.get('TFLOPs')) or row.get('TFLOPs') == ''):
+            if not(pd.isna(row.get('TFlops')) or row.get('TFlops') == ''):
                 continue
 
             # Extract the required fields
             arch = row['Chip']
             num_cu = str(row['numCU'])
             perf_config = row['PerfConfig']
+            tflops = tfrow['TFlops']lops
             configs = parse_debug_db_row(row)
-            ret[(arch, num_cu, configs)] = perf_config
+            ret[(arch, num_cu, configs, perf_config, tflops)] = row
 
         return ret
     except FileNotFoundError:
@@ -317,7 +316,8 @@ def read_debug_db(path: Optional[str]) -> MaybeTuningDbWithCU:
         return None
 
 # Tuning databases
-def read_tuning_db(path: Optional[str], include_num_cu: bool = False) -> Union[MaybeTuningDb, MaybeTuningDbWithCU]:
+MaybeTuningDb = Optional[Dict[Tuple[str, str, str], str]]
+def read_tuning_db(path: [str]) -> MaybeTuningDb:
     try:
         ret = {}
         with open(path, 'r') as dbFile:
@@ -330,21 +330,15 @@ def read_tuning_db(path: Optional[str], include_num_cu: bool = False) -> Union[M
                 # note: legacy format has 3 entries
                 if len(entries) == 3:
                     arch, config, perfConfig = entries
-                    ret[arch, config] = perfConfig
+                    ret[arch, None, config] = perfConfig
                 # note: new format has 4 entries
                 elif len(entries) == 4:
                     arch, num_cu, config, perfConfig = entries
-                    if (include_num_cu):
-                        ret[arch, num_cu, config] = perfConfig
-                    else:
-                        ret[arch, config] = perfConfig
+                    ret[arch, num_cu, config] = perfConfig
                 # note: 5-entry form includes tflops at end
                 elif len(entries) == 5:
                     arch, num_cu, config, perfConfig, _ = entries
-                    if (include_num_cu):
-                        ret[arch, num_cu, config] = perfConfig
-                    else:
-                        ret[arch, config] = perfConfig
+                    ret[arch, num_cu, config] = perfConfig
                 else:
                     print("Warning: Malformed tuning database entry:", line)
                     continue
@@ -376,14 +370,14 @@ def runPipeline(proc_specs):
         # Wait for the last process to finish and collect its output
         outs, errs = procs[-1].communicate()
         if procs[-1].returncode != 0:
-            raise OSError(str(errs))
+            raise OSError(str(procs[-1].stderr.read()))
 
         # Now check all processes for errors
         for i, p in enumerate(procs):
             if p.returncode is None:
                 p.wait()
             if p.returncode != 0:
-                raise OSError("Process failed")
+                raise OSError(str(p.stderr.read()))
 
         return outs, errs
     except Exception as err:
@@ -917,7 +911,7 @@ class GemmConfiguration(PerfConfiguration):
     def setPerfConfig(self, perf_config):
         self.perfConfig = perf_config
 
-    def generateMlirDriverCommandLine(self, rocmlir_gen_flags):
+    def generateMlirDriverCommandLine(self, rocmlir_gen_flags, kernel_repeats=MLIR_N_REPEATS):
         result = ' '.join(['-operation', 'gemm',
                            '-t', self.dataType,
                            '-out_datatype', self.outDataType,
@@ -929,7 +923,7 @@ class GemmConfiguration(PerfConfiguration):
                            '-n', str(self.n),
                            f"-transA={self.transA}",
                            f"-transB={self.transB}",
-                           '--kernel-repeats', str(MLIR_N_REPEATS),
+                           *(['--kernel-repeats', str(kernel_repeats)] if kernel_repeats is not None else []),
                            f"--perf_config={self.perfConfig}"])
 
         result += ' '
@@ -1093,7 +1087,7 @@ class ConvGemmConfiguration(PerfConfiguration):
     def setPerfConfig(self, perf_config):
         self.perfConfig = perf_config
 
-    def generateMlirDriverCommandLine(self, rocmlir_gen_flags):
+    def generateMlirDriverCommandLine(self, rocmlir_gen_flags, kernel_repeats=MLIR_N_REPEATS):
         result = ' '.join(['-operation', 'conv_gemm',
                            '-t', self.dataType,
                            '--arch', self.arch,
@@ -1117,7 +1111,7 @@ class ConvGemmConfiguration(PerfConfiguration):
                            f'--padding_w={self.paddingW}',
                            f'--groupsize={self.group}',
                            f'--gemmO={self.o}',
-                           f'--kernel-repeats={MLIR_N_REPEATS}',
+                           *(['--kernel-repeats', str(kernel_repeats)] if kernel_repeats is not None else []),
                            f"--perf_config={self.perfConfig}"])
         result += ' '
         if rocmlir_gen_flags != '':
@@ -1273,7 +1267,7 @@ class GemmGemmConfiguration(PerfConfiguration):
     def setPerfConfig(self, perf_config):
         self.perfConfig = perf_config
 
-    def generateMlirDriverCommandLine(self, rocmlir_gen_flags):
+    def generateMlirDriverCommandLine(self, rocmlir_gen_flags, kernel_repeats=MLIR_N_REPEATS):
         result = ' '.join(['-operation', 'gemm_gemm',
                            '-t', self.dataType,
                            '--arch', self.arch,
@@ -1287,7 +1281,7 @@ class GemmGemmConfiguration(PerfConfiguration):
                            f"-transB={self.transB}",
                            f"-transC={self.transC}",
                            f"-transO={self.transO}",
-                           '--kernel-repeats', str(MLIR_N_REPEATS),
+                           *(['--kernel-repeats', str(kernel_repeats)] if kernel_repeats is not None else []),
                            f"--perf_config={self.perfConfig}"])
         result += ' '
         if rocmlir_gen_flags != '':
@@ -1436,7 +1430,7 @@ class AttentionConfiguration(PerfConfiguration):
     def setPerfConfig(self, perf_config):
         self.perfConfig = perf_config
 
-    def generateMlirDriverCommandLine(self, rocmlir_gen_flags):
+    def generateMlirDriverCommandLine(self, rocmlir_gen_flags, kernel_repeats=MLIR_N_REPEATS):
         result = ' '.join(['-operation', 'attention',
                            '-t', self.dataType,
                            '--arch', self.arch,
@@ -1456,7 +1450,7 @@ class AttentionConfiguration(PerfConfiguration):
                            f"-transO={self.transO}",
                            f"-causal={self.causal}",
                            f"-return_lse={self.return_lse}",
-                           '--kernel-repeats', str(MLIR_N_REPEATS),
+                           *(['--kernel-repeats', str(kernel_repeats)] if kernel_repeats is not None else []),
                            f"--perf_config={self.perfConfig}"])
         result += ' '
         if rocmlir_gen_flags != '':

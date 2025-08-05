@@ -25,21 +25,48 @@ import subprocess
 import sys
 
 from datetime import datetime
-from testing_metrics import calculateOccupancy, calculateAttentionOccupancy
+from testing_metrics import calculateGemmOccupancy, calculateAttentionOccupancy
 
-# perfRunner may or may not be in the same directory as this script depending
-# on if the user has run `ninja ci-performance-scripts`
-try:
-    import perfRunner
-except ModuleNotFoundError:
-    parent_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-    sys.path.append(parent_dir)
-    import perfRunner
+# This script expects that nin ci-performance-scripts has already been run
+import perfRunner
 
 
 # TODO use AmdArchDb.py (when it's implemented). 4 works for all current
 # architectures, but this may not hold in the future.
 numEUPerCU = 4
+
+# Constants for individual field names
+FIELD_ARCH = 'arch'
+FIELD_NUM_CUS = 'numCUs'
+FIELD_TEST_VECTOR = 'testVector'
+FIELD_PERF_CONFIG = 'PerfConfig'
+FIELD_BLOCKSIZE = 'blocksize'
+FIELD_GRIDSIZE = 'gridsize'
+FIELD_VGPR_COUNT = 'vgpr_count'
+FIELD_VGPR_SPILLS = 'vgpr_spills'
+FIELD_SGPR_COUNT = 'sgpr_count'
+FIELD_SGPR_SPILLS = 'sgpr_spills'
+FIELD_LDS_ALLOCATED = 'lds_allocated'
+FIELD_OCCUPANCY = 'occupancy'
+FIELD_WF_PER_WG = 'wf_per_wg'
+FIELD_MFMA_WMMA_INSTRUCTION = 'mfma_wmma_instruction'
+
+TSV_FIELDNAMES = [
+    FIELD_ARCH,
+    FIELD_NUM_CUS, 
+    FIELD_TEST_VECTOR,
+    FIELD_PERF_CONFIG,
+    FIELD_BLOCKSIZE,
+    FIELD_GRIDSIZE,
+    FIELD_VGPR_COUNT,
+    FIELD_VGPR_SPILLS,
+    FIELD_SGPR_COUNT,
+    FIELD_SGPR_SPILLS,
+    FIELD_LDS_ALLOCATED,
+    FIELD_OCCUPANCY,
+    FIELD_WF_PER_WG,
+    FIELD_MFMA_WMMA_INSTRUCTION
+]
 
 class TuningData:
     """Class to represent tuning data results."""
@@ -58,18 +85,7 @@ class TuningData:
     
     def to_dict(self):
         """Convert to dictionary format for tsv writing."""
-        return {
-            'blocksize': self.blocksize,
-            'gridsize': self.gridsize,
-            'vgpr_count': self.vgpr_count,
-            'vgpr_spills': self.vgpr_spills,
-            'sgpr_count': self.sgpr_count,
-            'sgpr_spills': self.sgpr_spills,
-            'lds_allocated': self.lds_allocated,
-            'occupancy': self.occupancy,
-            'wf_per_wg' : self.wf_per_wg,
-            'mfma_wmma_instruction': self.mfma_wmma_instruction
-        }
+        return self.__dict__
 
 def get_perf_config(operation, test_vector, arch, num_cu):
     """
@@ -94,14 +110,8 @@ def get_perf_config(operation, test_vector, arch, num_cu):
 
     return conf_class
 
-def compile_config(config, perf_config, operation, paths, timestamp):
-    arch = config[0].split(':')[0]
-    num_cu = config[1]
-    test_vector = config[2]
-
-    conf_class = get_perf_config(operation, test_vector, arch, num_cu)
-    conf_class.setPerfConfig(perf_config)
-    rocmlir_gen_options = conf_class.generateMlirDriverCommandLine("")
+def compile_config(conf_class, operation, paths, timestamp):
+    rocmlir_gen_options = conf_class.generateMlirDriverCommandLine("", None)
 
     # Build the rocmlir-gen command
     rocmlir_gen_cmd = [paths.mlir_paths.rocmlir_gen_path] + rocmlir_gen_options.split()
@@ -206,8 +216,31 @@ def parse_results(debug_output):
         tuning_data.mfma_wmma_instruction = mfma_wmma_instructions[0]
 
     return tuning_data
+
+def calculateNPerWave(n_per_wave, m_per_wave, n_per_block, m_per_block, arch):
+    """
+    Calculate the NPerWave value based on the given NPerWave value and the
+    architecture that we are targeting
+    """
+    # Split at the first ':' if it exists
+    if ':' in arch:
+        arch = arch.split(':', 1)[0]
+
+    # For CDNA architectures (gfx9xx) we
+    if arch.startswith('gfx9'):
+        # This should always match with what the value for maxWavesPerWG is in
+        # Rock.h
+        max_waves_per_wg = 4
     
-def parse_perf_config(perf_config, num_cu):
+        m_waves = min(m_per_block / m_per_wave, max_waves_per_wg)
+        n_waves = max_waves_per_wg / m_waves
+        return max(n_per_block / n_waves, n_per_wave)
+
+    # For RDNA architectures (gfx10xx, gfx11xx, gfx12xx) we can just use the
+    # n_per_wave value as is
+    return n_per_wave
+    
+def parse_perf_config(perf_config, num_cu, arch):
     """
     Parse the perfConfig string to extract tuning parameters.
     
@@ -216,6 +249,11 @@ def parse_perf_config(perf_config, num_cu):
     
     Returns:
         dict: Dictionary containing parsed parameters
+
+    TODO: The format of the perfConfig string is subject to changes in the
+          future, so we should at a minimum be keeping this in sync with the
+          c++ code, but we should als consider making bindings to the c++ code
+          that can be called from here.
     """
     try:
         # Split by ':' to separate operation, version, and parameters
@@ -223,19 +261,27 @@ def parse_perf_config(perf_config, num_cu):
         if len(parts) < 2:
             raise ValueError(f"Invalid perfConfig format: {perf_config}")
         
-        # For attention ops: operation:version:parameters
-        # For gemm/conv ops: version:parameters
+        # The format is either going to have three parts or two parts. Make sure
+        # to properly handle the `operation` case
+        # - operation:version:parameters
+        # - version:parameters
+        version = None
         if len(parts) >= 3:
-            # Attention format - extract the parameters part (everything after
-            # the second ':')
+            # If there are three parts, then we assume the first part denoting
+            # the operation is going to be equal to `attention`
+            assert(parts[0] == 'attn' or parts[0] == 'attention')
             params_str = parts[2]
+            version = parts[1]
         else:
-            # GEMM/conv format - parameters are after the first ':'
+            # parameters are after the first ':'
             params_str = parts[1]
+            version = parts[0]
         
         # Split parameters by comma
         params = params_str.split(',')
-        if len(params) < 7:  # At minimum we need 7 parameters for splitKFactor
+        if ((version == "v1") and not (len(params) == 8)) \
+           or ((version == "v2") and not (len(params) == 9)) \
+           or ((version == "v3") and not (len(params) == 11)):
             raise ValueError(f"Insufficient parameters in perfConfig")
         
         # Parse the required parameters
@@ -244,7 +290,9 @@ def parse_perf_config(perf_config, num_cu):
             'NPerBlock': int(params[1]),
             'KPerBlock': int(params[2]),
             'MPerWave': int(params[3]),
-            'NPerWave': int(params[4]),
+            'NPerWave': calculateNPerWave(int(params[4]), int(params[3]),
+                                          int(params[1]),
+                                          int(params[0]), arch),
             'kPack': int(params[5]),
             'splitKFactor': int(params[6])
         }
@@ -262,101 +310,39 @@ def parse_perf_config(perf_config, num_cu):
         print(f"Error parsing perfConfig '{perf_config}': {e}")
         return None
     
-def calculateConvN(arg_dict):
-    """
-    This function calculate the total number of output elements/pixels
-    for convolution operations based on the provided arguments in the test
-    vector.
-
-    Note: Right now we are working under the assumption that we will only ever
-    # need to calculate the N value for forward convolutions based on the
-    # configs in tier1-tuning-data. If in the future this changes, we will need
-    # to update this function to handle calculations for different types of
-    # backwards convolutions.
-    """
-    assert int(arg_dict.get('-F')) == 1, \
-           "Only forward convolution (-F=1) is supported"
-    # Forward convolution: N = batch_size * output_height * output_width
-    # This is based off of the calculation that is done in TosaToLinalgNamed
-    batch_size = int(arg_dict.get('-n', 1))
-    input_height = int(arg_dict.get('-H', 0))
-    input_width = int(arg_dict.get('-W', 0))
-    pad_top = int(arg_dict.get('-p', 0))
-    pad_bottom = int(arg_dict.get('-p', 0))  # Assuming symmetric padding
-    pad_left = int(arg_dict.get('-q', 0))
-    pad_right = int(arg_dict.get('-q', 0))   # Assuming symmetric padding
-    stride_y = int(arg_dict.get('-u', 1))
-    stride_x = int(arg_dict.get('-v', 1))
-    filter_height = int(arg_dict.get('-y', 1))
-    filter_width = int(arg_dict.get('-x', 1))
-    # Assuming same dilation for both dimensions
-    dilation_y = int(arg_dict.get('-l', 1))
-    dilation_x = int(arg_dict.get('-j', 1))
-    
-    # Calculate output dimensions using the formula:
-    # output_dim = ((input_dim + pad_total - 
-    #               (dilation*(filter_size-1)+1)) / stride) + 1
-    output_height = ((input_height + pad_top + pad_bottom - \
-                     (dilation_y * (filter_height - 1) + 1)) // stride_y) + 1
-    output_width = ((input_width + pad_left + pad_right - \
-                     (dilation_x * (filter_width - 1) + 1)) // stride_x) + 1
-
-    N = batch_size * output_height * output_width
-
-    return N
-    
-def extract_MNG_from_config(config, test_args, operation):
+def extract_MNG_from_config(conf_class, operation):
     """
     Extract M, N, and G values from the testVector based on the operation type.
     
     Args:
-        config: Configuration dictionary containing testVector
-        test_args: Filtered list of arguments from the testVector
+        conf_class: Configuration class instance of specified operation
         operation: Operation type (e.g., 'attention', 'gemm', 'conv2d')
     
     Returns:
         tuple: (M, N, G) values based on operation type
     """
-    args = test_args.split()
-    # Create a dictionary of arguments for easier lookup
-    arg_dict = {}
-    i = 0
-    while i < len(args):
-        if args[i].startswith('-') and i + 1 < len(args):
-            # Check if next arg is a value (not another flag)
-            if not args[i + 1].startswith('-'):
-                arg_dict[args[i]] = args[i + 1]
-                i += 2
-            else:
-                # Flag without value
-                arg_dict[args[i]] = True
-                i += 1
-        else:
-            i += 1
-    
-    M = None
-    N = None
-    G = None
-    
     try:
         if operation.lower() in ['attention', 'attn']:
-            # For attention ops: M = seq_len_q, N = seq_len_k, G = g
-            M = int(arg_dict.get('-seq_len_q', 0))
-            N = int(arg_dict.get('-seq_len_k', 0))
-            G = int(arg_dict.get('-g', 0)) * int(arg_dict.get('-num_heads_q', 0)) 
+            # For attention ops: M = seq_len_q, N = seq_len_k, G = g * num_heads_q
+            M = conf_class.seq_len_q
+            N = conf_class.seq_len_k
+            G = conf_class.g * conf_class.num_heads_q
             
         elif operation.lower() in ['gemm']:
             # For GEMM ops: M = m, N = n, G = g
-            M = int(arg_dict.get('-m', 0))
-            N = int(arg_dict.get('-n', 0))
-            G = int(arg_dict.get('-g', 0))
+            M = conf_class.m
+            N = conf_class.n
+            G = conf_class.g
             
         elif operation.lower() in ['conv', 'convfp16', 'convbfp16', 'convint8',
                                    'convfp8']:
-            # For conv ops: M = k, N = calculateConvN, G = g
-            G = int(arg_dict.get('-g', 1))
-            M = int(arg_dict.get('-k', 0))
-            N = calculateConvN(arg_dict)
+            # For conv ops: M = k, N = batch_size * output_height * output_width,
+            # G = g
+            assert conf_class.direction == 'fwd', \
+           "Only forward convolution (-F=1) is supported"
+            G = conf_class.g
+            M = conf_class.k
+            N = conf_class.n * conf_class.ho * conf_class.wo
             
         else:
             print(f"Warning: Unknown operation type '{operation}'")
@@ -370,20 +356,20 @@ def extract_MNG_from_config(config, test_args, operation):
     
     return M, N, G
 
-def gatherOccupancyParameters(config, perf_config, operation):
+def gatherOccupancyParameters(config, perf_config, conf_class, operation):
     '''
     This function gathers all of the parameters that are needed to calculate
     the theoretical occupancy
     '''
     num_cu = config[1]
     test_vector = config[2]
-    parsed_params = parse_perf_config(perf_config, num_cu)
+    parsed_params = parse_perf_config(perf_config, num_cu, config[0])
     
     if parsed_params is None:
         return [None] * 8  # Return None values if parsing fails
     
     # Extract the required parameters for occupancy calculation
-    [M, N, G] = extract_MNG_from_config(config, test_vector, operation)
+    [M, N, G] = extract_MNG_from_config(conf_class, operation)
     
     MPerBlock = int(parsed_params['MPerBlock'])
     NPerBlock = int(parsed_params['NPerBlock'])
@@ -400,8 +386,15 @@ def compile_and_collect_data(config, perf_config, operation, binaries):
     # Get current timestamp in a filesystem-friendly format
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
 
+    # Create a performance configuration class instance
+    arch = config[0].split(':')[0]
+    num_cu = config[1]
+    test_vector = config[2]
+    conf_class = get_perf_config(operation, test_vector, arch, num_cu)
+    conf_class.setPerfConfig(perf_config)
+
     # Compile the config
-    debug_output = compile_config(config, perf_config, operation, binaries,
+    debug_output = compile_config(conf_class, operation, binaries,
                                   timestamp)
     if isinstance(debug_output, bytes):
         debug_output = debug_output.decode('utf-8')
@@ -421,6 +414,7 @@ def compile_and_collect_data(config, perf_config, operation, binaries):
         MNPerWave, minNumWaves, splitKFactor] = \
                                 gatherOccupancyParameters(config,
                                                           perf_config,
+                                                          conf_class,
                                                           operation)
     # If any of the parameters are None, we cannot calculate occupancy
     if None in [M, N, G, MPerBlock, NPerBlock,
@@ -429,10 +423,11 @@ def compile_and_collect_data(config, perf_config, operation, binaries):
               "calculation for config. Skipping occupancy calculation.")
         results.occupancy = None
     elif operation.lower() == 'attention':
-        results.occupancy = calculateAttentionOccupancy(N, G, NPerBlock,
+        results.occupancy = calculateAttentionOccupancy(N, G, MPerBlock,
+                                                        NPerBlock,
                                                         MNPerWave, minNumWaves)
     else :
-        results.occupancy = calculateOccupancy(M, N, G, MPerBlock, NPerBlock,
+        results.occupancy = calculateGemmOccupancy(M, N, G, MPerBlock, NPerBlock,
                                                MNPerWave, minNumWaves,
                                                splitKFactor)
 
@@ -457,31 +452,13 @@ def write_results_to_tsv(results, configs):
     if not results:
         print("No results to write")
         sys.exit(1)
-    
-    # Define the fieldnames for the tsv
-    fieldnames = [
-        'arch',
-        'numCUs',
-        'testVector',
-        'perfConfig',
-        'blocksize',
-        'gridsize',
-        'vgpr_count',
-        'vgpr_spills',
-        'sgpr_count',
-        'sgpr_spills',
-        'lds_allocated',
-        'occupancy',
-        'wf_per_wg',
-        'mfma_wmma_instruction'
-    ]
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     output_file = f"tuning_results_{timestamp}.tsv"
     
     try:
         with open(output_file, 'w', newline='', encoding='utf-8') as tsvfile:
-            writer = csv.DictWriter(tsvfile, fieldnames=fieldnames)
+            writer = csv.DictWriter(tsvfile, fieldnames=TSV_FIELDNAMES)
             
             # Write the header
             writer.writeheader()
@@ -489,44 +466,19 @@ def write_results_to_tsv(results, configs):
             # Write each result row
             for (config, result) in zip(configs, results):
                 arch, num_cu, test_vector = config
-                if result is None:
-                    row = {
-                        'arch': arch,
-                        'numCUs': num_cu,
-                        'testVector': test_vector,
-                        'perfConfig': configs[config],
-                        'blocksize': None,
-                        'gridsize': None,
-                        'vgpr_count': None,
-                        'vgpr_spills': None,
-                        'sgpr_count': None,
-                        'sgpr_spills': None,
-                        'lds_allocated': None,
-                        'occupancy': None,
-                        'wf_per_wg': None,
-                        'mfma_wmma_instruction': None
-                    }
-                else:
-                    # Convert TuningData object to a dictionary
-                    result_dict = result.to_dict()
+                row = {
+                    FIELD_ARCH: arch,
+                    FIELD_NUM_CUS: num_cu,
+                    FIELD_TEST_VECTOR: test_vector,
+                    FIELD_PERF_CONFIG: configs[config],
+                }
 
-                    row = {
-                        'arch': arch,
-                        'numCUs': num_cu,
-                        'testVector': test_vector,
-                        'perfConfig': configs[config],
-                        'blocksize': result_dict.get('blocksize', ''),
-                        'gridsize': result_dict.get('gridsize', ''),
-                        'vgpr_count': result_dict.get('vgpr_count', ''),
-                        'vgpr_spills': result_dict.get('vgpr_spills', ''),
-                        'sgpr_count': result_dict.get('sgpr_count', ''),
-                        'sgpr_spills': result_dict.get('sgpr_spills', ''),
-                        'lds_allocated': result_dict.get('lds_allocated', ''),
-                        'occupancy': result_dict.get('occupancy', ''),
-                        'wf_per_wg': result_dict.get('wf_per_wg', ''),
-                        'mfma_wmma_instruction': result_dict.get('mfma_wmma_instruction', '')
-                    }
-                
+                data_fieldnames = TSV_FIELDNAMES[4:]
+                if result is None:
+                    row.update({field: None for field in data_fieldnames})
+                else:
+                    result_dict = result.to_dict()
+                    row.update({field: result_dict.get(field, '') for field in data_fieldnames})
                 writer.writerow(row)
         
         print(f"\nResults written to {output_file}")
@@ -553,7 +505,7 @@ def main():
         description="Compile configurations and collect tuning data",
         formatter_class=argparse.RawDescriptionHelpFormatter
     )
-    parser.add_argument('--op', required=True,
+    parser.add_argument('--op', "--operation", required=True,
                         help='Operation to perform (e.g., "compile")',
                         choices=['conv', 'gemm', 'attention'])
     parser.add_argument('config_tsv', help='Path to the tuning database file')
@@ -571,11 +523,7 @@ def main():
         sys.exit(1)
 
     # Parse the configuration file
-    configs = None
-    if args.config_tsv.endswith('.debug'):
-        configs = perfRunner.read_debug_db(args.config_tsv)
-    else:
-        configs = perfRunner.read_tuning_db(args.config_tsv, True)
+    configs = perfRunner.read_debug_db(args.config_tsv)
 
     print(f"Found {len(configs)} configurations to process")
     
@@ -584,9 +532,10 @@ def main():
     total_configs = len(configs)
     for i, config in enumerate(configs):
         print_progress(i, total_configs)
-        metrics = compile_and_collect_data(config, configs[config],
+        metrics = compile_and_collect_data(config, config[3],
                                            args.op, paths)
         results.append(metrics)
+        break
 
     # Write the results to a final tsv file
     write_results_to_tsv(results, configs)

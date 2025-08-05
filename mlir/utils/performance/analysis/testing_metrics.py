@@ -54,7 +54,7 @@ def analyzeGemmFile(file, n):
 
     df["ArithmeticIntensity"] = df.apply(lambda row: calculateArithmeticIntensity(row["M"], row["N"], row["K"]), axis=1)
     df["MNPerWave"] = df.apply(lambda row: (int(row["MPerWave"]) * int(row["NPerWave"])), axis=1)
-    df["Occupancy"] = df.apply(lambda row: calculateOccupancy(int(row["M"]), int(row["N"]), int(row["G"]), int(row["MPerBlock"]), int(row["NPerBlock"]), int(row["MNPerWave"]), minNumWaves), axis=1)
+    df["Occupancy"] = df.apply(lambda row: calculateGemmOccupancy(int(row["M"]), int(row["N"]), int(row["G"]), int(row["MPerBlock"]), int(row["NPerBlock"]), int(row["MNPerWave"]), minNumWaves), axis=1)
     df["WorkImbalance"] = df.apply(lambda row: calculateWorkImbalance(int(row["M"]), int(row["N"]), int(row["G"]), int(row["MPerBlock"]), int(row["NPerBlock"]), int(row["MNPerWave"]), minNumWaves, int(row["splitKFactor"])), axis=1)
 
     topList = []
@@ -149,7 +149,7 @@ def calculateArithmeticIntensity(M, N, K):
     return (M*N*K)/(M*N + M*K + N*K) # opPerByte/bytesLoaded
 
 
-def calculateOccupancy(M, N, G, MPerBlock, NPerBlock, MNPerWave, minNumWaves, splitKFactor=1):
+def calculateGemmOccupancy(M, N, G, MPerBlock, NPerBlock, MNPerWave, minNumWaves, splitKFactor=1):
     MTiles = math.ceil(M/MPerBlock)
     NTiles = math.ceil(N/NPerBlock)
 
@@ -159,9 +159,9 @@ def calculateOccupancy(M, N, G, MPerBlock, NPerBlock, MNPerWave, minNumWaves, sp
 
     return Waves / minNumWaves
 
-def calculateAttentionOccupancy(N, G, NPerBlock, MNPerWave, minNumWaves):
-    WorkGroups = (N / NPerBlock) * G
-    WavesPerBlock = NPerBlock // MNPerWave
+def calculateAttentionOccupancy(N, G, MPerBlock, NPerBlock, MNPerWave, minNumWaves):
+    WorkGroups = math.ceil((N / NPerBlock)) * G
+    WavesPerBlock = MPerBlock * NPerBlock // MNPerWave
     Waves = WorkGroups * WavesPerBlock
     return Waves / minNumWaves
 
