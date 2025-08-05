@@ -2258,7 +2258,7 @@ static void getGemmTypes(ArrayRef<Type> elemTypes,
   if (isCpuVerifier && (accelLayoutA || accelLayoutB)) {
     assert(!perfConfig.empty() &&
            "perfConfig must be set when accelLayoutA or accelLayoutB is true");
-    auto populateParamsAccelPtr = rock::PopulateParamsAccel::select(features);
+    assert(rock::isAccel(features) && "non-accel is unsupported");
     rock::InitParamsAccel validParams;
     bool isValidPerfConfig = validParams.deserialize(perfConfig);
     assert(isValidPerfConfig && "perfConfig must be valid");

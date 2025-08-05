@@ -824,7 +824,7 @@ Value WmmaEmitter::wrapLDSBufferForLoad(OpBuilder &b, Location loc,
   int64_t kPack = tuningParams.getKpack();
   // TODO: gfx10 supports directToLDS. Implement it.
   assert(!directToLds && "direct to LDS not supported for WMMA");
-  assert(ldsLayout != GemmLDSLayout::KxDxkpack &&
+  assert(ldsLayout == GemmLDSLayout::KxDxkpack &&
          "WMMA only supports LDS layout KxDxkpack for now");
 
   // Extract relevant emitter parameters
