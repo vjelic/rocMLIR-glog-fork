@@ -154,8 +154,10 @@ struct ExpandAccelLayout
       return b.notifyMatchFailure(op, "wrong output type rank");
 
     int64_t g = outputType.getShape()[0];
-    int64_t d = kBlockFirst ? outputType.getShape()[1] : outputType.getShape()[2];
-    int64_t k = kBlockFirst ? outputType.getShape()[2] : outputType.getShape()[1];
+    int64_t d =
+        kBlockFirst ? outputType.getShape()[1] : outputType.getShape()[2];
+    int64_t k =
+        kBlockFirst ? outputType.getShape()[2] : outputType.getShape()[1];
     int64_t kPerBlock = kPackPerBlock * kPack;
     if (d % dPerBlock != 0 || k % kPerBlock != 0)
       return b.notifyMatchFailure(
