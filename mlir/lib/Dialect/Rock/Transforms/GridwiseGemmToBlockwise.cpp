@@ -123,24 +123,15 @@ static FailureOr<std::tuple<GemmDimension, int64_t, int64_t, int64_t>>
 computeCopyPerThreadDirectToLDS(Value matrix, Type elementType,
                                 int64_t copyPerThread, int64_t kPerBlock,
                                 int64_t dPerBlock, int64_t kpack,
-                                int64_t blockSize, int64_t targetBits,
-                                bool accelLayout, Location loc) {
+                                int64_t targetBits, Location loc) {
   int64_t copyKPerThread = 0;
   int64_t copyDPerThread = 0;
-  int64_t repeatKPerThread = accelLayout ? 0 : 1;
+  int64_t repeatKPerThread = 1;
   // TODO: we need targetBits=96 if we want direct to LDS for f6
   if (targetBits % elementType.getIntOrFloatBitWidth() != 0)
     return failure();
 
   int64_t inputDimLen = targetBits / elementType.getIntOrFloatBitWidth();
-
-  int64_t dThread, kThread;
-  if (accelLayout) {
-    dThread = math_util::gcd(blockSize, dPerBlock);
-    assert(blockSize % dThread == 0 &&
-           "blockSize should be divisible by dThread");
-    kThread = blockSize / dThread;
-  }
 
   VectorizationResult dVectorRes =
       getMaxVectorization(matrix, static_cast<uint32_t>(GemmDimension::MorN),
@@ -153,38 +144,14 @@ computeCopyPerThreadDirectToLDS(Value matrix, Type elementType,
   auto dim = (dVectorLen > kVectorLen) ? GemmDimension::MorN : GemmDimension::K;
 
   int64_t copyFastestDimPerThread;
-  if (accelLayout) {
-    // For accel layout, K has to be the fastest changing dimension
-    if (dim != GemmDimension::K)
-      return failure();
-
-    copyKPerThread =
-        math_util::gcd(kVectorLen, math_util::gcd(copyPerThread, kpack));
-    assert(dPerBlock % dThread == 0 &&
-           "dPerBlock should be divisible by dThread");
-    copyDPerThread = dPerBlock / dThread;
-    assert(kPerBlock % (copyKPerThread * kThread) == 0 &&
-           "kPerBlock should be divisible by (copyKPerThread*kThread)");
-    repeatKPerThread = kPerBlock / (copyKPerThread * kThread);
-    copyFastestDimPerThread = copyKPerThread;
-
-    if (copyKPerThread != kpack)
-      // each thread has to load kpack elements along K
-      return failure();
-
-    // TODO: try to relax this requirements
-    if (repeatKPerThread != 1 || copyDPerThread != 1)
-      return failure();
+  if (dim == GemmDimension::MorN) {
+    copyDPerThread = math_util::gcd(dVectorLen, copyPerThread);
+    copyKPerThread = copyPerThread / copyDPerThread;
+    copyFastestDimPerThread = copyDPerThread;
   } else {
-    if (dim == GemmDimension::MorN) {
-      copyDPerThread = math_util::gcd(dVectorLen, copyPerThread);
-      copyKPerThread = copyPerThread / copyDPerThread;
-      copyFastestDimPerThread = copyDPerThread;
-    } else {
-      copyKPerThread = math_util::gcd(kVectorLen, copyPerThread);
-      copyDPerThread = copyPerThread / copyKPerThread;
-      copyFastestDimPerThread = copyKPerThread;
-    }
+    copyKPerThread = math_util::gcd(kVectorLen, copyPerThread);
+    copyDPerThread = copyPerThread / copyKPerThread;
+    copyFastestDimPerThread = copyKPerThread;
   }
 
   // if the fastest dimension doesn't match inputDimLen. We can't use direct to
@@ -193,11 +160,10 @@ computeCopyPerThreadDirectToLDS(Value matrix, Type elementType,
     return failure();
   }
 
-  if (copyKPerThread == 0 || copyDPerThread == 0 || repeatKPerThread == 0) {
+  if (copyKPerThread == 0 || copyDPerThread == 0) {
     return failure();
   }
-  if (kPerBlock < (copyKPerThread * repeatKPerThread) ||
-      dPerBlock < copyDPerThread) {
+  if (kPerBlock < copyKPerThread || dPerBlock < copyDPerThread) {
     return failure();
   }
   return std::make_tuple(dim, copyKPerThread, copyDPerThread, repeatKPerThread);
@@ -393,6 +359,10 @@ getVectorDim(PatternRewriter &rewriter, Location loc, Value matrix,
       maybeCopyDPerThread = failure();
   int64_t copyPerThread = (kPerBlock * dPerBlock) / blockSize;
   if (directToLDS) {
+    if (accelLayout)
+      return emitError(loc)
+             << "accel layout not implemented for direct to LDS yet.\n";
+
     auto arch = getArch(matrix.getDefiningOp());
     if (failed(arch))
       return emitError(loc) << "can't get arch\n";
@@ -408,13 +378,13 @@ getVectorDim(PatternRewriter &rewriter, Location loc, Value matrix,
     // LDS.
     if (directToLDS128b)
       maybeCopyDPerThread = computeCopyPerThreadDirectToLDS(
-          matrix, elemType, copyPerThread, kPerBlock, dPerBlock, kpack,
-          blockSize, 128, accelLayout, loc);
+          matrix, elemType, copyPerThread, kPerBlock, dPerBlock, kpack, 128,
+          loc);
 
     if (failed(maybeCopyDPerThread) && directToLDS32b)
-      maybeCopyDPerThread = computeCopyPerThreadDirectToLDS(
-          matrix, elemType, copyPerThread, kPerBlock, dPerBlock, kpack,
-          blockSize, 32, accelLayout, loc);
+      maybeCopyDPerThread =
+          computeCopyPerThreadDirectToLDS(matrix, elemType, copyPerThread,
+                                          kPerBlock, dPerBlock, kpack, 32, loc);
   } else if (accelLayout) {
     maybeCopyDPerThread = computeCopyPerThreadAccelLayout(
         elemType, copyPerThread, kPerBlock, dPerBlock, kpack, blockSize, loc);
@@ -488,7 +458,8 @@ static LDSLayoutConfigDim getLDSLayoutConfigDim(Type elementType, int64_t kpack,
   if (directToLDS || accelLayout) {
     cfg.doRotateWithK = false;
     cfg.doSwapThreadIterSubDims = false;
-    if (directToLDS && !accelLayout)
+
+    if (directToLDS)
       cfg.ldsLayout =
           isKContiguousDim ? GemmLDSLayout::DxK : GemmLDSLayout::KxD;
   }
