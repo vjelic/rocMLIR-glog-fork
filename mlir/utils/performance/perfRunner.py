@@ -295,14 +295,14 @@ def read_debug_db(path: [str]) -> MaybeDebugDb:
         for _, row in df.iterrows():
             # If this was not a valid config, i.e., it did not generate a
             # TFLOPs value, then we can skip it
-            if not(pd.isna(row.get('TFlops')) or row.get('TFlops') == ''):
+            if pd.isna(row.get('TFlops')) or row.get('TFlops') == '':
                 continue
 
             # Extract the required fields
             arch = row['Chip']
             num_cu = str(row['numCU'])
             perf_config = row['PerfConfig']
-            tflops = tfrow['TFlops']lops
+            tflops = row['TFlops']
             configs = parse_debug_db_row(row)
             ret[(arch, num_cu, configs, perf_config, tflops)] = row
 
