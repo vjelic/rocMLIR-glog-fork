@@ -181,10 +181,6 @@ struct ExpandAccelLayout
 void RockExpandAccelLayoutTransformPass::runOnOperation() {
   MLIRContext *ctx = &getContext();
   ConversionTarget target(*ctx);
-  auto func = getOperation();
-  // disable for non-kernels
-  if (!func->hasAttr("kernel"))
-    return;
 
   target.addIllegalOp<rock::AccelLayoutTransformOp>();
   target.markUnknownOpDynamicallyLegal([](Operation *) { return true; });
