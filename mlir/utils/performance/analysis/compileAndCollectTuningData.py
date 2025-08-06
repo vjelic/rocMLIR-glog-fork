@@ -379,7 +379,7 @@ def gatherOccupancyParameters(config, perf_config, conf_class, operation):
 
     return [M, N, G, MPerBlock, NPerBlock, MNPerWave, minNumWaves, splitKFactor]
 
-def compile_and_collect_data(config, perf_config, operation, binaries):
+def compile_and_collect_data(config, operation, binaries):
     """
     Compile and collect the resulting data points that we are interested in
     """
@@ -390,6 +390,8 @@ def compile_and_collect_data(config, perf_config, operation, binaries):
     arch = config[0].split(':')[0]
     num_cu = config[1]
     test_vector = config[2]
+    perf_config = config[3]
+    tflops = config[4]
     conf_class = get_perf_config(operation, test_vector, arch, num_cu)
     conf_class.setPerfConfig(perf_config)
 
@@ -408,6 +410,8 @@ def compile_and_collect_data(config, perf_config, operation, binaries):
 
     # Parse the results from the compiled config
     results = parse_results(debug_output)
+
+    # TODO: Convert the TFLOPs value to seconds
 
     # Calculate occupancy using the method in testing_metrics.py
     [M, N, G, MPerBlock, NPerBlock,
@@ -532,8 +536,7 @@ def main():
     total_configs = len(configs)
     for i, config in enumerate(configs):
         print_progress(i, total_configs)
-        metrics = compile_and_collect_data(config, config[3],
-                                           args.op, paths)
+        metrics = compile_and_collect_data(config, args.op, paths)
         results.append(metrics)
         break
 
