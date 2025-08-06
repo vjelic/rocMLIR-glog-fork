@@ -18,6 +18,16 @@ values = ["true", "false"]
 prefix = "--transC="
 
 [[axis]]
+name = "accelLayoutA"
+values = ["true", "false"]
+prefix = "--accelLayoutA="
+
+[[axis]]
+name = "accelLayoutB"
+values = ["true", "false"]
+prefix = "--accelLayoutB="
+
+[[axis]]
 name = "data type"
 values = ["f32", "f16", "i8", "fp8_fp8", "fp8_bf8", "bf8_fp8", "bf8_bf8"]
 prefix = "-t "
