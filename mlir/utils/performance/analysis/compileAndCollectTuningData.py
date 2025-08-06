@@ -27,7 +27,7 @@ import sys
 from datetime import datetime
 from testing_metrics import calculateGemmOccupancy, calculateAttentionOccupancy
 
-# This script expects that nin ci-performance-scripts has already been run
+# This script expects that ninja ci-performance-scripts has already been run
 import perfRunner
 
 
@@ -143,7 +143,7 @@ def parse_mfma_wmma_instructions(content):
     full_matches = re.findall(full_pattern, content, re.IGNORECASE)
     
     # Remove duplicates and sort for consistent output
-    unique_instructions = sorted(list(set(full_matches)))
+    unique_instructions = list(set(full_matches))
     
     # Assert that there is only one unique instruction
     size = len(unique_instructions)
@@ -226,7 +226,8 @@ def calculateNPerWave(n_per_wave, m_per_wave, n_per_block, m_per_block, arch):
     if ':' in arch:
         arch = arch.split(':', 1)[0]
 
-    # For CDNA architectures (gfx9xx) we
+    # For CDNA architectures (gfx9xx) the n_per_wave value passed in is really
+    # mnPerXdl, so we need to calculate the actual n_per_wave value 
     if arch.startswith('gfx9'):
         # This should always match with what the value for maxWavesPerWG is in
         # Rock.h
@@ -268,8 +269,8 @@ def parse_perf_config(perf_config, num_cu, arch):
         version = None
         if len(parts) >= 3:
             # If there are three parts, then we assume the first part denoting
-            # the operation is going to be equal to `attention`
-            assert(parts[0] == 'attn' or parts[0] == 'attention')
+            # the operation is going to be equal to `attn`
+            assert(parts[0] == 'attn')
             params_str = parts[2]
             version = parts[1]
         else:
@@ -284,7 +285,8 @@ def parse_perf_config(perf_config, num_cu, arch):
            or ((version == "v3") and not (len(params) == 11)):
             raise ValueError(f"Insufficient parameters in perfConfig")
         
-        # Parse the required parameters
+        # Parse the required parameters. Note that kpack does not exist in v1,
+        # so we set it to 1
         parsed_params = {
             'MPerBlock': int(params[0]),
             'NPerBlock': int(params[1]),
@@ -293,7 +295,7 @@ def parse_perf_config(perf_config, num_cu, arch):
             'NPerWave': calculateNPerWave(int(params[4]), int(params[3]),
                                           int(params[1]),
                                           int(params[0]), arch),
-            'kPack': int(params[5]),
+            'kPack': 1 if (version == "v1") else int(params[5]),
             'splitKFactor': int(params[6])
         }
         
@@ -435,13 +437,6 @@ def compile_and_collect_data(config, operation, binaries):
                                                MNPerWave, minNumWaves,
                                                splitKFactor)
 
-    # Clean up temporary debug file
-    try:
-        if os.path.exists(debug_output):
-            os.remove(debug_output)
-    except Exception as e:
-        print(f"  Warning: Could not remove {debug_output}: {e}")
-
     return results
 
 def write_results_to_tsv(results, configs):
@@ -451,7 +446,6 @@ def write_results_to_tsv(results, configs):
     Args:
         results: List of tuning data dictionaries
         configs: List of original configuration dictionaries
-        output_file: Path to the output tsv file
     """
     if not results:
         print("No results to write")
@@ -524,7 +518,7 @@ def main():
     # Check if the input config tsv file exists
     if not os.path.exists(args.config_tsv):
         print(f"Error: The specified config tsv file cannot be found.")
-        sys.exit(1)
+        return 1
 
     # Parse the configuration file
     configs = perfRunner.read_debug_db(args.config_tsv)
@@ -538,10 +532,13 @@ def main():
         print_progress(i, total_configs)
         metrics = compile_and_collect_data(config, args.op, paths)
         results.append(metrics)
-        break
 
     # Write the results to a final tsv file
     write_results_to_tsv(results, configs)
+
+    # If we have reached this point without crashing, it means that we have had
+    # a successful run and we can return 0.
+    return 0
 
 if __name__ == "__main__":
     sys.exit(main())

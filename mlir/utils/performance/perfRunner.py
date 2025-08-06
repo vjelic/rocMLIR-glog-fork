@@ -15,7 +15,7 @@ import argparse
 import re
 
 from dataclasses import dataclass
-from typing import Optional, Dict, Tuple, Union
+from typing import Optional, Dict, Tuple
 import numpy as np
 import pandas as pd
 from hip import hip
@@ -288,7 +288,7 @@ def parse_debug_db_row(row) -> str:
 
 # Tuning debug databases
 MaybeDebugDb = Optional[Dict[Tuple[str, str, str, str, str], str]]
-def read_debug_db(path: [str]) -> MaybeDebugDb:
+def read_debug_db(path: str) -> MaybeDebugDb:
     try:
         df = pd.read_csv(path, sep='\t')
         ret = {}

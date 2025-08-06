@@ -161,7 +161,7 @@ def calculateGemmOccupancy(M, N, G, MPerBlock, NPerBlock, MNPerWave, minNumWaves
 
 def calculateAttentionOccupancy(N, G, MPerBlock, NPerBlock, MNPerWave, minNumWaves):
     WorkGroups = math.ceil((N / NPerBlock)) * G
-    WavesPerBlock = MPerBlock * NPerBlock // MNPerWave
+    WavesPerBlock = (MPerBlock * NPerBlock) // MNPerWave
     Waves = WorkGroups * WavesPerBlock
     return Waves / minNumWaves
 
