@@ -144,7 +144,8 @@ struct ExpandAccelLayout
       mPerBlock = wmmaParams.getMPerBlock();
       nPerBlock = wmmaParams.getNPerBlock();
       kPackPerBlock = wmmaParams.getKpackPerBlock();
-    } else if (auto generalParams = dyn_cast<rock::GeneralGemmParamsAttr>(params)) {
+    } else if (auto generalParams =
+                   dyn_cast<rock::GeneralGemmParamsAttr>(params)) {
       mPerBlock = generalParams.getMPerBlock();
       nPerBlock = generalParams.getNPerBlock();
       kPackPerBlock = generalParams.getKPerBlock();
