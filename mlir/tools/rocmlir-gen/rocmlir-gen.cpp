@@ -2258,15 +2258,25 @@ static void getGemmTypes(ArrayRef<Type> elemTypes,
   if (isCpuVerifier && (accelLayoutA || accelLayoutB)) {
     assert(!perfConfig.empty() &&
            "perfConfig must be set when accelLayoutA or accelLayoutB is true");
-    assert(rock::isAccel(features) && "non-accel is unsupported");
-    rock::InitParamsAccel validParams;
-    bool isValidPerfConfig = validParams.deserialize(perfConfig);
-    assert(isValidPerfConfig && "perfConfig must be valid");
+    if(rock::isAccel(features)) {
+      rock::InitParamsAccel validParams;
+      bool isValidPerfConfig = validParams.deserialize(perfConfig);
+      assert(isValidPerfConfig && "perfConfig must be valid");
 
-    mPerBlock = validParams.gemmMPerBlock;
-    nPerBlock = validParams.gemmNPerBlock;
-    kpackPerBlock = validParams.gemmKPerBlock;
-    kPack = validParams.gemmKPack;
+      mPerBlock = validParams.gemmMPerBlock;
+      nPerBlock = validParams.gemmNPerBlock;
+      kpackPerBlock = validParams.gemmKPerBlock;
+      kPack = validParams.getKPack();
+    } else {
+      rock::InitParamsNonAccel validParams;
+      bool isValidPerfConfig = validParams.deserialize(perfConfig);
+      assert(isValidPerfConfig && "perfConfig must be valid");
+
+      mPerBlock = validParams.gemmMPerBlock;
+      nPerBlock = validParams.gemmNPerBlock;
+      kpackPerBlock = validParams.gemmKPerBlock;
+      kPack = validParams.getKPack();
+    }
 
     kPerBlock = kpackPerBlock * kPack;
     kBlocks = gemmK / kPerBlock;
