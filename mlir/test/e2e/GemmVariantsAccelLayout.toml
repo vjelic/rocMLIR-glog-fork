@@ -1,4 +1,4 @@
-directory = "GemmVariants"
+directory = "GemmVariantsAccelLayout"
 prefix = "rocmlir-gen"
 suffix = "--operation gemm --arch %arch %pv %random_data %rocmlir_gen_flags | rocmlir-driver -c | mlir-runner -O2 --shared-libs=%linalg_test_lib_dir/libmlir_rocm_runtime%shlibext,%conv_validation_wrapper_library_dir/libconv-validation-wrappers%shlibext,%linalg_test_lib_dir/libmlir_runner_utils%shlibext,%linalg_test_lib_dir/libmlir_float16_utils%shlibext --entry-point-result=void | FileCheck %s --check-prefix="
 
@@ -18,30 +18,39 @@ values = ["true", "false"]
 prefix = "--transC="
 
 [[axis]]
-name = "data type"
-values = ["f32", "f16", "i8", "fp8_fp8", "fp8_bf8", "bf8_fp8", "bf8_bf8"]
-prefix = "-t "
+name = "accelLayoutA"
+values = ["true", "false"]
+prefix = "--accelLayoutA="
 
 [[axis]]
-name = "schedule_version"
-values = ["1", "2"]
-prefix = "--schedule_version  "
+name = "accelLayoutB"
+values = ["true", "false"]
+prefix = "--accelLayoutB="
+
+[[axis]]
+name = "perf_config"
+values = ["v3:32,32,4,32,16,8,1,1,2,1,1", "v3:16,16,4,16,16,8,1,2,2,1,1", "v3:128,128,4,32,32,8,1,2,2,1,1"]
+prefix = "--perf_config="
+
+[[axis]]
+name = "data type"
+values = ["f16", "i8", "fp8_fp8", "fp8_bf8", "bf8_fp8", "bf8_bf8"]
+prefix = "-t "
 
 ## Gemm variants
 [[suite]]
-name = "gemm_variants"
+name = "gemm_variants_accel_layout"
 
 [[suite.test]]
-config = "-g 3 -m 1024 -k 769 -n 1024"
+config = "-g 3 -m 1024 -k 768 -n 1024"
 
 [[suite.test]]
-config = "-g 1 -m 1024 -k 769 -n 1024"
+config = "-g 1 -m 1024 -k 768 -n 1024"
 
 [[suite.test]]
-config = "-g 1 -m 1024 -k 769 -n 1024 --reverse_grid"
+config = "-g 1 -m 1024 -k 768 -n 1024 --reverse_grid"
 
-# Let's make sure the very silly thing works
 [[suite.test]]
-config = "-g 1 -m 1 -k 1 -n 1"
+config = "-g 1 -m 128 -k 128 -n 128"
 
 
