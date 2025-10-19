@@ -22,7 +22,6 @@ jobs:
         uses: ./.github/glog-action
         with:
           lang: 'cpp'
-          client: 'demo'
           upload: 'true'
           github-token: ${{ secrets.PAT_TOKEN }}
           glog-token: ${{ secrets.GLOG_TOKEN }}
